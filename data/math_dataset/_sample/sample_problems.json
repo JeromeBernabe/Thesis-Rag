@@ -1,0 +1,62 @@
+[
+  {
+    "id": "s01",
+    "problem": "What is the value of 2 + 3?",
+    "solution": "2 + 3 = 5."
+  },
+  {
+    "id": "s02",
+    "problem": "Simplify the expression 3x + 2x.",
+    "solution": "3x + 2x = 5x."
+  },
+  {
+    "id": "s03",
+    "problem": "What is the area of a rectangle with length 6 and width 4?",
+    "solution": "The area is 6 * 4 = 24 square units."
+  },
+  {
+    "id": "s04",
+    "problem": "Solve for x: x + 5 = 12.",
+    "solution": "x = 12 - 5 = 7."
+  },
+  {
+    "id": "s05",
+    "problem": "What is 15 divided by 3?",
+    "solution": "15 / 3 = 5."
+  },
+  {
+    "id": "s06",
+    "problem": "Evaluate 2^3.",
+    "solution": "2^3 = 8."
+  },
+  {
+    "id": "s07",
+    "problem": "What is the perimeter of a square with side 5?",
+    "solution": "The perimeter is 4 * 5 = 20 units."
+  },
+  {
+    "id": "s08",
+    "problem": "Solve for y: 2y - 4 = 10.",
+    "solution": "2y = 14, so y = 7."
+  },
+  {
+    "id": "s09",
+    "problem": "What is the average of 4, 6, and 8?",
+    "solution": "(4 + 6 + 8) / 3 = 18 / 3 = 6."
+  },
+  {
+    "id": "s10",
+    "problem": "What is 7% of 200?",
+    "solution": "7% of 200 = 0.07 * 200 = 14."
+  },
+  {
+    "id": "s11",
+    "problem": "Solve for z: z/4 = 3.",
+    "solution": "z = 3 * 4 = 12."
+  },
+  {
+    "id": "s12",
+    "problem": "What is the value of 5! (5 factorial)?",
+    "solution": "5! = 5 * 4 * 3 * 2 * 1 = 120."
+  }
+]
