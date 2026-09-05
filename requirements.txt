@@ -1,13 +1,27 @@
-torch==2.13.0+cpu
-chromadb==1.5.9
-langchain==0.3.30
-langchain-community==0.3.31
-langchain-core==0.3.86
-langchain-ollama==0.3.10
-langchain-openai==0.3.35
-ragas==0.4.3
-datasets==5.0.1
-pandas==3.0.5
-numpy==2.4.6
-scipy==1.17.1
-requests==2.34.2
+# --- PyTorch (CUDA-enabled build for NVIDIA GPU) ---
+# Check `nvidia-smi` for your CUDA version and adjust the URL suffix accordingly
+# (cu121 = CUDA 12.1, cu124 = CUDA 12.4, etc.)
+--extra-index-url https://download.pytorch.org/whl/cu121
+torch>=2.2.0
+
+# --- Vector store ---
+chromadb>=0.5.0
+
+# --- RAG orchestration ---
+langchain>=0.2.0
+langchain-community>=0.2.0
+
+# --- Ollama client (for calling local Llama 3.2 / nomic-embed-text) ---
+ollama>=0.2.0
+
+# --- Evaluation ---
+ragas>=0.1.9
+
+# --- Data & stats ---
+pandas>=2.2.0
+numpy>=1.26.0
+scipy>=1.13.0
+
+# --- Utilities ---
+tqdm>=4.66.0
+python-dotenv>=1.0.0

@@ -238,6 +238,86 @@ def load_hotpot_records(directory: Path | None = None, file_patterns=None) -> li
 
 
 # ---------------------------------------------------------------------------
+# RagTruth loader
+# ---------------------------------------------------------------------------
+
+def load_ragtruth_source_records(directory: Path | None = None, file_patterns=None) -> list[dict]:
+    """Load RagTruth source documents (corpus for indexing)."""
+    directory = Path(directory) if directory is not None else settings.RAGTRUTH_DIR
+    if file_patterns is None:
+        file_patterns = ["Rag_Truth_Source.jsonl"]
+    records: list[dict] = []
+    files = []
+    for pat in file_patterns:
+        files.extend(sorted(directory.glob(pat)))
+    files = sorted(set(files))
+    for path in files:
+        if not path.is_file():
+            continue
+        try:
+            raw = _parse_jsonl(path)
+        except Exception as exc:
+            logger.warning("failed to parse %s: %s", path.name, exc)
+            continue
+        for rec in raw:
+            if not isinstance(rec, dict):
+                continue
+            source_id = str(rec.get("source_id", "")).strip()
+            source_info = str(rec.get("source_info", "")).strip()
+            if not source_id or not source_info:
+                continue
+            records.append({
+                "id": source_id,
+                "problem": source_info,
+                "solution": "",
+                "doc_text": source_info,
+            })
+    logger.info("Loaded %d RagTruth source records from %s", len(records), directory)
+    return records
+
+
+def load_ragtruth_response_records(directory: Path | None = None, file_patterns=None) -> list[dict]:
+    """Load RagTruth responses (filtered to a single model) for eval prompts."""
+    directory = Path(directory) if directory is not None else settings.RAGTRUTH_DIR
+    if file_patterns is None:
+        file_patterns = ["Rag_Truth_Response.jsonl"]
+    target_model = settings.RAGTRUTH_RESPONSE_MODEL
+    records: list[dict] = []
+    files = []
+    for pat in file_patterns:
+        files.extend(sorted(directory.glob(pat)))
+    files = sorted(set(files))
+    for path in files:
+        if not path.is_file():
+            continue
+        try:
+            raw = _parse_jsonl(path)
+        except Exception as exc:
+            logger.warning("failed to parse %s: %s", path.name, exc)
+            continue
+        for rec in raw:
+            if not isinstance(rec, dict):
+                continue
+            model = str(rec.get("model", "")).strip()
+            if model != target_model:
+                continue
+            rid = str(rec.get("id", "")).strip()
+            source_id = str(rec.get("source_id", "")).strip()
+            response = str(rec.get("response", "")).strip()
+            if not rid or not response:
+                continue
+            records.append({
+                "id": rid,
+                "problem": response,
+                "solution": response,
+                "source_id": source_id,
+            })
+    logger.info("Loaded %d RagTruth response records (model=%s) from %s",
+                len(records), target_model, directory)
+    return records
+
+
+# ---------------------------------------------------------------------------
 # Dispatcher
 # ---------------------------------------------------------------------------
 
@@ -253,12 +333,16 @@ def load_records(
         return load_hotpot_records(directory, file_patterns)
     elif dataset == "math":
         return load_math_records(directory, file_patterns)
+    elif dataset == "ragtruth":
+        return load_ragtruth_source_records(directory, file_patterns)
     else:
         raise ValueError(f"Unknown dataset: {dataset!r}. Must be one of {settings.VALID_DATASETS}")
 
 
 def dataset_corpus_records(dataset: str, directory: Path | None = None) -> list[dict]:
     """Load the corpus (index) records for a dataset (training files)."""
+    if dataset == "ragtruth":
+        return load_ragtruth_source_records(directory)
     if directory is None:
         directory = settings.DATASETS_DIR
     patterns = settings.DATASET_CORPUS_FILES.get(dataset)
@@ -267,6 +351,8 @@ def dataset_corpus_records(dataset: str, directory: Path | None = None) -> list[
 
 def dataset_test_records(dataset: str, directory: Path | None = None) -> list[dict]:
     """Load the test records for a dataset (used to build eval prompts)."""
+    if dataset == "ragtruth":
+        return load_ragtruth_response_records(directory)
     if directory is None:
         directory = settings.DATASETS_DIR
     patterns = settings.DATASET_TEST_FILES.get(dataset)
@@ -282,6 +368,8 @@ def format_doc_text(dataset: str, record: dict) -> str:
         return f"Pre-text:\n{record.get('pre_text', '')}"
     elif dataset == "hotpot":
         return record.get("doc_text", "")
+    elif dataset == "ragtruth":
+        return record.get("doc_text", record.get("problem", ""))
     else:
         return f"Problem:\n{record['problem']}\n\nSolution:\n{record['solution']}".strip()
 

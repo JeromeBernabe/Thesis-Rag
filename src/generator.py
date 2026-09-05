@@ -24,6 +24,7 @@ SYSTEM_PROMPTS = {
     "fintech": GENERAL_SYSTEM_PROMPT,
     "hotpot": GENERAL_SYSTEM_PROMPT,
     "math": MATH_SYSTEM_PROMPT,
+    "ragtruth": GENERAL_SYSTEM_PROMPT,
 }
 
 

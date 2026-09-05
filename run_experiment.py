@@ -33,11 +33,15 @@ def index_corpus(dataset: str, store: VectorStore, data_dir=None) -> int:
         raise SystemExit(
             f"No {dataset} records found in {settings.DATASETS_DIR}. Drop data files there first."
         )
+    if settings.MAX_CORPUS_DOCS and len(records) > settings.MAX_CORPUS_DOCS:
+        logger.info("%s: limiting corpus from %d to %d documents.", dataset, len(records), settings.MAX_CORPUS_DOCS)
+        ids = ids[:settings.MAX_CORPUS_DOCS]
+        records = records[:settings.MAX_CORPUS_DOCS]
     if store.count > 0:
         logger.info("%s: vector store already has %d documents; skipping indexing.", dataset, store.count)
         return store.count
     documents = [format_doc_text(dataset, r) for r in records]
-    batch_size = 256
+    batch_size = 128
     for start in range(0, len(documents), batch_size):
         store.add_documents(
             ids[start:start + batch_size],

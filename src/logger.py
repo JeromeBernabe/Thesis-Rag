@@ -39,9 +39,9 @@ class ResultLogger:
             "prompt_id": prompt_id,
             "system_id": system_id,
             "retrieved_k": retrieved_k if retrieved_k is not None else "",
-            "faithfulness": faithfulness,
-            "answer_relevancy": answer_relevancy,
-            "context_recall": context_recall,
+            "faithfulness": faithfulness if faithfulness is not None else "",
+            "answer_relevancy": answer_relevancy if answer_relevancy is not None else "",
+            "context_recall": context_recall if context_recall is not None else "",
         }
         with self._lock:
             with open(self.path, "a", newline="", encoding="utf-8") as f:

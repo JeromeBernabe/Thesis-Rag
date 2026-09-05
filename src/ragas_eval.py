@@ -59,7 +59,7 @@ class RagasScorer:
         max_workers: int = settings.RAGAS_MAX_WORKERS,
         timeout: int = settings.RAGAS_TIMEOUT,
         strictness: int = 3,
-        max_retries: int = 2,
+        max_retries: int = 5,
     ):
         self.judge_model = judge_model
         self.embed_model = embed_model
@@ -148,6 +148,9 @@ class RagasScorer:
         """Align judge verdict items to statements (by text match, else by index)."""
         if not items:
             return None
+        items = [i for i in items if isinstance(i, dict)]
+        if not items:
+            return None
         if len(items) == len(statements):
             return [self._verdict_value(item, verdict_key) for item in items]
         matched: dict[int, int] = {}
@@ -160,7 +163,8 @@ class RagasScorer:
                 if i in used:
                     continue
                 if label == statement or (
-                    len(statement) >= 4 and (label in statement or statement in label)
+                    len(label) >= 6 and len(statement) >= 6
+                    and (label in statement or statement in label)
                 ):
                     matched[i] = self._verdict_value(item, verdict_key)
                     used.add(i)
@@ -171,7 +175,10 @@ class RagasScorer:
             return [
                 self._verdict_value(item, verdict_key) for item in items[: len(statements)]
             ]
-        return None
+        for i in range(len(statements)):
+            if i not in matched:
+                matched[i] = 0
+        return [matched[i] for i in range(len(statements))]
 
     # ------------------------------------------------------------ faithfulness
     def _answer_statements(self, answer: str) -> list[str]:
@@ -181,7 +188,16 @@ class RagasScorer:
             f"Answer:\n{answer}\n"
             f'{JSON_HEADER}\n{{"statements": ["statement 1", "statement 2", ...]}}'
         )
-        return self._as_list(self._complete_json(prompt), "statements")
+        result = self._as_list(self._complete_json(prompt, max_tokens=600), "statements")
+        if not result:
+            fallback = (
+                "List every distinct factual claim in the following text as a separate item. "
+                "Output as a JSON list of strings.\n"
+                f"Text:\n{answer}\n"
+                f'{JSON_HEADER}\n{{"statements": ["1. ...", "2. ..."]}}'
+            )
+            result = self._as_list(self._complete_json(fallback, max_tokens=600), "statements")
+        return result
 
     def _nli_verdicts(self, statements: list[str], context: str) -> list[int] | None:
         context_trunc = context[:8000]
@@ -194,10 +210,13 @@ class RagasScorer:
             f"Statements:\n{stmts_json}\n"
             f'{JSON_HEADER}\n{{"verdicts": [{{"statement": "...", "verdict": 0}}]}}'
         )
-        data = self._complete_json(prompt, max_tokens=600)
+        data = self._complete_json(prompt, max_tokens=800)
         if not data or not isinstance(data.get("verdicts"), list):
             return None
-        return self._align_verdicts(statements, data["verdicts"], "verdict")
+        verdicts = [v for v in data["verdicts"] if isinstance(v, dict)]
+        if not verdicts:
+            return None
+        return self._align_verdicts(statements, verdicts, "verdict")
 
     def _score_faithfulness(self, question: str, response: str, contexts: list[str]) -> float | None:
         statements = self._answer_statements(response)
@@ -252,7 +271,16 @@ class RagasScorer:
             f"Reference answer:\n{reference}\n"
             f'{JSON_HEADER}\n{{"statements": ["statement 1", "statement 2", ...]}}'
         )
-        return self._as_list(self._complete_json(prompt), "statements")
+        result = self._as_list(self._complete_json(prompt, max_tokens=600), "statements")
+        if not result:
+            fallback = (
+                "List every distinct factual claim in the following text as a separate item. "
+                "Output as a JSON list of strings.\n"
+                f"Text:\n{reference}\n"
+                f'{JSON_HEADER}\n{{"statements": ["1. ...", "2. ..."]}}'
+            )
+            result = self._as_list(self._complete_json(fallback, max_tokens=600), "statements")
+        return result
 
     def _attribution_verdicts(self, statements: list[str], context: str) -> list[int] | None:
         context_trunc = context[:8000]
@@ -265,10 +293,19 @@ class RagasScorer:
             f"Statements:\n{stmts_json}\n"
             f'{JSON_HEADER}\n{{"verdicts": [{{"statement": "...", "attributed": 1}}]}}'
         )
-        data = self._complete_json(prompt, max_tokens=600)
+        data = self._complete_json(prompt, max_tokens=800)
         if not data or not isinstance(data.get("verdicts"), list):
             return None
-        return self._align_verdicts(statements, data["verdicts"], "attributed")
+        verdicts = [v for v in data["verdicts"] if isinstance(v, dict)]
+        if not verdicts:
+            return None
+        key = "attributed"
+        if verdicts and not any("attributed" in v for v in verdicts):
+            for alt in ("verdict", "supported", "is_supported", "can_be_attributed"):
+                if any(alt in v for v in verdicts):
+                    key = alt
+                    break
+        return self._align_verdicts(statements, verdicts, key)
 
     def _score_context_recall(
         self, question: str, response: str, contexts: list[str], reference: str

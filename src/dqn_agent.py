@@ -8,6 +8,7 @@ import torch
 import torch.nn as nn
 
 from config import settings
+from config.settings import DEVICE
 
 
 class QNetwork(nn.Module):
@@ -52,10 +53,10 @@ class ReplayBuffer:
         batch = random.sample(self.buffer, batch_size)
         states = torch.tensor(
             np.stack([e.state for e in batch]), dtype=torch.float32
-        )
-        actions = torch.tensor([e.action for e in batch], dtype=torch.long)
-        rewards = torch.tensor([e.reward for e in batch], dtype=torch.float32)
-        dones = torch.tensor([e.done for e in batch], dtype=torch.float32)
+        ).to(DEVICE)
+        actions = torch.tensor([e.action for e in batch], dtype=torch.long).to(DEVICE)
+        rewards = torch.tensor([e.reward for e in batch], dtype=torch.float32).to(DEVICE)
+        dones = torch.tensor([e.done for e in batch], dtype=torch.float32).to(DEVICE)
         return states, actions, rewards, dones
 
     def __len__(self) -> int:
@@ -84,8 +85,8 @@ class DQNAgent:
         self.checkpoint_path = Path(checkpoint_path)
 
         self.num_actions = settings.NUM_ACTIONS
-        self.q_net = QNetwork()
-        self.target_net = QNetwork()
+        self.q_net = QNetwork().to(DEVICE)
+        self.target_net = QNetwork().to(DEVICE)
         self.target_net.load_state_dict(self.q_net.state_dict())
         self.target_net.eval()
 
@@ -97,7 +98,7 @@ class DQNAgent:
 
     def _state_tensor(self, state) -> torch.Tensor:
         arr = np.asarray(state, dtype=np.float32).reshape(1, -1)
-        return torch.tensor(arr, dtype=torch.float32)
+        return torch.tensor(arr, dtype=torch.float32).to(DEVICE)
 
     def greedy_action(self, state) -> int:
         with torch.no_grad():
@@ -137,9 +138,10 @@ class DQNAgent:
         path.parent.mkdir(parents=True, exist_ok=True)
         torch.save(
             {
-                "q_net": self.q_net.state_dict(),
-                "target_net": self.target_net.state_dict(),
-                "optimizer": self.optimizer.state_dict(),
+                "q_net": {k: v.cpu() for k, v in self.q_net.state_dict().items()},
+                "target_net": {k: v.cpu() for k, v in self.target_net.state_dict().items()},
+                "optimizer": {k: v.cpu() if isinstance(v, torch.Tensor) else v
+                              for k, v in self.optimizer.state_dict().items()},
                 "epsilon": self.epsilon,
                 "steps": self.steps,
             },
@@ -150,7 +152,7 @@ class DQNAgent:
         path = Path(path) if path is not None else self.checkpoint_path
         if not path.exists():
             raise FileNotFoundError(f"checkpoint not found: {path}")
-        ckpt = torch.load(path, map_location="cpu")
+        ckpt = torch.load(path, map_location=DEVICE)
         self.q_net.load_state_dict(ckpt["q_net"])
         self.target_net.load_state_dict(ckpt["target_net"])
         self.optimizer.load_state_dict(ckpt["optimizer"])
