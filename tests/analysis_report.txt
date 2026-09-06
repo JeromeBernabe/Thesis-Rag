@@ -1,0 +1,18 @@
+==============================================================================
+DESCRIPTIVE STATISTICS PER SYSTEM
+==============================================================================
+system_id           metric  count     mean      std      min      max
+        A     faithfulness     44 0.658131 0.245784 0.166667 1.000000
+        A answer_relevancy     50 0.756618 0.104463 0.504982 0.968468
+        A   context_recall     50 0.498772 0.256709 0.000000 1.000000
+        B     faithfulness     46 0.608872 0.217536 0.142857 1.000000
+        B answer_relevancy     50 0.755563 0.097181 0.420959 0.960801
+        B   context_recall     50 0.498772 0.256709 0.000000 1.000000
+
+==============================================================================
+PAIRED T-TESTS (System B - System A), alpha = 0.05
+==============================================================================
+          metric  n_pairs  t_statistic  p_value   mean_a   mean_b  mean_difference  significant
+    faithfulness       42     1.477697 0.147130 0.658469 0.603396        -0.055073        False
+answer_relevancy       50     0.066025 0.947626 0.756618 0.755563        -0.001055        False
+  context_recall       50          NaN      NaN 0.498772 0.498772         0.000000        False

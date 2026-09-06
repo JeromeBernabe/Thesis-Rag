@@ -95,12 +95,13 @@ def run_system_b(dataset: str, prompts: list[dict], logger_out: ResultLogger) ->
     for i, prompt in enumerate(prompts):
         episode = dqn.train_episode(prompt["question"], prompt.get("ground_truth"))
         logger.info(
-            "  step %d/%d | k=%d | F=%.3f AR=%.3f | R=%.3f | loss=%s | eps=%.3f",
+            "  step %d/%d | k=%d | F=%.3f AR=%.3f CR=%.3f | R=%.3f | loss=%s | eps=%.3f",
             i + 1,
             len(prompts),
             episode["k"],
             episode["faithfulness"] if episode["faithfulness"] is not None else float("nan"),
             episode["answer_relevancy"] if episode["answer_relevancy"] is not None else float("nan"),
+            episode.get("context_recall") if episode.get("context_recall") is not None else float("nan"),
             episode["reward"],
             f"{episode['loss']:.4f}" if episode["loss"] is not None else "n/a",
             episode["epsilon"],

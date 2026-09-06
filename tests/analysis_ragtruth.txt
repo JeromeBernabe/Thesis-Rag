@@ -1,0 +1,22 @@
+==========================================================================================
+DESCRIPTIVE STATISTICS PER SYSTEM
+==========================================================================================
+system_id           metric  count     mean      std      min      max
+        A     faithfulness     20 0.872302 0.257172 0.000000 1.000000
+        A answer_relevancy     20 0.767348 0.110290 0.405501 0.922653
+        A   context_recall     20 0.914532 0.234861 0.000000 1.000000
+        B     faithfulness     20 0.890833 0.250816 0.000000 1.000000
+        B answer_relevancy     20 0.747570 0.133327 0.373912 0.922653
+        B   context_recall     20 0.914532 0.234861 0.000000 1.000000
+
+==========================================================================================
+STATISTICAL TESTS (System B - System A), alpha = 0.05
+==========================================================================================
+          metric  n_pairs   mean_a   mean_b  mean_difference  cohens_d  ci_95_low  ci_95_high  t_statistic  p_two_tailed  p_one_tailed  sig_two_tailed  sig_one_tailed  wilcoxon_stat  wilcoxon_p_two  wilcoxon_p_one  wilcoxon_sig_one
+    faithfulness       20 0.872302 0.890833         0.018532    0.0498    -0.1555      0.1926      -0.2228      0.826050      0.586975           False           False           16.5        0.833434        0.416717             False
+answer_relevancy       20 0.767348 0.747570        -0.019779   -0.1176    -0.0985      0.0590       0.5258      0.605138      0.302569           False           False           51.0        0.379375        0.810313             False
+  context_recall       20 0.914532 0.914532         0.000000       NaN        NaN         NaN          NaN           NaN           NaN           False           False            NaN             NaN             NaN             False
+
+Note: p_one_tailed tests H1: B > A (directional hypothesis).
+      wilcoxon_* are non-parametric Wilcoxon signed-rank tests.
+      CI 95% is for the mean difference (B - A).

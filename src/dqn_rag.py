@@ -57,11 +57,12 @@ class DQNRAG:
             response,
             contexts,
             reference=ground_truth,
-            metric_names=["faithfulness", "answer_relevancy"],
+            metric_names=["faithfulness", "answer_relevancy", "context_recall"],
         )
         faithfulness = scores.get("faithfulness")
         answer_relevancy = scores.get("answer_relevancy")
-        reward = compute_reward(faithfulness, answer_relevancy, k)
+        context_recall = scores.get("context_recall")
+        reward = compute_reward(faithfulness, answer_relevancy, k, context_recall)
 
         self.agent.store(state, action, reward)
         loss = self.agent.train_step()
@@ -84,6 +85,7 @@ class DQNRAG:
             "contexts": contexts,
             "faithfulness": faithfulness,
             "answer_relevancy": answer_relevancy,
+            "context_recall": context_recall,
             "reward": reward,
             "loss": loss,
             "epsilon": self.agent.epsilon,
