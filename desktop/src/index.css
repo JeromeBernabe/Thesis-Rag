@@ -1,0 +1,103 @@
+@import 'tailwindcss';
+
+/*
+ * Dark-first theme.
+ *
+ * The app renders dense numeric output - metric tables, coordinates, log
+ * streams - so the surfaces are near-black and the text contrast is high. The
+ * palette is declared as CSS custom properties here and consumed by Tailwind's
+ * @theme block below, which is what makes `bg-surface` etc. work as utilities.
+ */
+
+@theme {
+  --color-surface: oklch(0.17 0.012 265);
+  --color-surface-raised: oklch(0.21 0.014 265);
+  --color-surface-inset: oklch(0.14 0.011 265);
+  --color-border: oklch(0.3 0.015 265);
+  --color-border-strong: oklch(0.42 0.018 265);
+
+  --color-ink: oklch(0.95 0.005 265);
+  --color-ink-muted: oklch(0.72 0.012 265);
+  --color-ink-faint: oklch(0.56 0.014 265);
+
+  /* System A is the baseline, system B is the DQN. These two hues are used
+     consistently in charts, the 3D views and the run list so a reader never has
+     to check which is which. */
+  --color-system-a: oklch(0.68 0.14 235);
+  --color-system-b: oklch(0.72 0.16 155);
+
+  --color-accent: oklch(0.72 0.15 265);
+  --color-danger: oklch(0.65 0.19 25);
+  --color-warning: oklch(0.78 0.15 75);
+  --color-success: oklch(0.72 0.16 155);
+
+  --font-mono: 'Cascadia Code', 'JetBrains Mono', Consolas, monospace;
+
+  --radius-panel: 0.5rem;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-surface);
+  color: var(--color-ink);
+  font-family:
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    sans-serif;
+  font-size: 14px;
+  /* A desktop app should not rubber-band or text-select like a document. */
+  overscroll-behavior: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Tabular figures everywhere numbers are compared column-wise. Without this,
+   metric values jitter horizontally as they update during a live run. */
+.tnum {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum';
+}
+
+/* Scrollbars, styled to stay out of the way on a dark surface. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: var(--color-border);
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--color-border-strong);
+}
+
+/* Respect a reduced-motion preference: the 3D views animate continuously and
+   the run console would otherwise be unusable. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
