@@ -12,15 +12,21 @@
 # version. That is a deliberate trade: it needs nothing installed, but it only
 # works on Windows with WebView2, which is where this app runs anyway.
 #
-# Two flows, because they fail in different ways:
+# Three flows, because they fail in different ways:
 #   1. start a dry run, wait for it to land in the database as completed
 #   2. start a real run, cancel it, require the row to reach 'cancelled'
+#   3. read the run back through Results and Simulation, then delete it
 #
-# Both run against the same window on purpose. Cancelling the *second* run of a
-# session is exactly what was broken for as long as this script existed: Tauri
+# All three run against the same window on purpose. Cancelling the *second* run of
+# a session is exactly what was broken for as long as this script existed: Tauri
 # keeps the first value it is given for a managed type, so the per-run handle was
 # never replaced and every cancel after the first one hit a dead process. Checking
 # the flows separately, in fresh windows, would have missed it entirely.
+#
+# The third flow runs last so it deletes its own run and leaves the counts as it
+# found them, and because the two runs above it are then already stored - so its
+# picker has more than one entry to choose from, which is the case that would
+# catch a stale selection.
 #
 # Run from the desktop directory:
 #   powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-window.ps1
@@ -115,6 +121,11 @@ try {
     & node .\scripts\cancel-window.mjs
     if ($LASTEXITCODE -ne 0) { Die 'the cancel flow failed' }
     Ok 'cancelled run settled'
+
+    Step 'Results and Simulation read real data back'
+    & node .\scripts\pages-window.mjs
+    if ($LASTEXITCODE -ne 0) { Die 'the pages flow failed' }
+    Ok 'pages read the database and cleaned up'
 
     Step 'the window is still responsive'
     $title = (Invoke-RestMethod -Uri "$cdp/json/list" -TimeoutSec 5)[0].title

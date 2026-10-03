@@ -114,12 +114,19 @@ be broken without it noticing. The window is its own gate:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-window.ps1
 ```
 
-It starts the app, drives two runs through the actual WebView, and checks the
-database afterwards: a dry run that must land as `completed` with its skipped
-judge metrics still `NULL`, and a real run that must be interrupted and land as
-`cancelled`. It finishes by confirming the window still answers.
+It starts the app, drives three flows through the actual WebView, and checks the
+database afterwards:
 
-Both runs happen in the same window on purpose. Cancelling the second run of a
+1. a dry run that must land as `completed` with its skipped judge metrics still
+   `NULL`;
+2. a real run that must be interrupted and land as `cancelled`;
+3. `get_run_detail`, `get_projection_data` and `delete_run` driven through the
+   Results and Simulation pages, ending with the run deleted and every row, prompt
+   and event count back where it started.
+
+It finishes by confirming the window still answers.
+
+Flows 1 and 2 happen in the same window on purpose. Cancelling the second run of a
 session is what was broken, and only because Tauri keeps the first value it is
 given for a managed type: re-managing the per-run handle was silently ignored, so
 every cancel after the first one targeted a dead process and the run carried on
@@ -127,6 +134,24 @@ to completion while the UI claimed otherwise. `runner::ActiveRunSlot` exists for
 that reason - the slot is managed once and the handle is swapped inside it - and
 `run_in_progress` was reading the same stale handle, so a second run could also be
 started alongside a live one.
+
+Flow 3 runs last because it cleans up after itself, and because by then the picker
+has more than one run in it, which is the case a stale default selection would fail.
+
+### Commands with no UI
+
+Six commands are registered, tested at the store layer, and unreachable from the
+window, because no page offers an affordance for them: `run_in_progress`,
+`get_run_events`, `get_stats`, `get_projection`, `list_projections` and
+`import_legacy`. They are referenced only from `src/lib/api.ts` and its mock.
+
+They cannot be driven from a script either - the app does not set
+`withGlobalTauri`, so `window.__TAURI__` does not exist and there is no way to
+invoke a command without something to click. Either they grow a UI, or they
+should be deleted; leaving them means a rename that breaks them is invisible to
+every gate here. `get_run_detail` already returns the stats and events that
+`get_stats` and `get_run_events` would return separately, which is worth weighing
+before wiring those two up.
 
 The WebView is attached over the DevTools protocol rather than through
 `tauri-driver`, which would need an `msedgedriver` matching the installed
