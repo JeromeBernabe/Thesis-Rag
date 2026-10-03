@@ -1,3 +1,5 @@
+import time
+
 from langchain_ollama import OllamaEmbeddings
 
 from config import settings
@@ -13,11 +15,17 @@ class Embedder:
         return settings.EMBEDDING_DIM
 
     def embed_query(self, text: str) -> list[float]:
+        t0 = time.perf_counter()
         vec = self._embeddings.embed_query(text)
+        elapsed = time.perf_counter() - t0
+        self._last_embed_time = elapsed
         return list(vec)
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        return [list(v) for v in self._embeddings.embed_documents(texts)]
+        t0 = time.perf_counter()
+        result = [list(v) for v in self._embeddings.embed_documents(texts)]
+        self._last_embed_time = time.perf_counter() - t0
+        return result
 
 
 _default_embedder: Embedder | None = None

@@ -72,7 +72,7 @@ class RagasScorer:
         self.max_workers = max_workers
 
     # ------------------------------------------------------------------ infra
-    def _complete(self, prompt: str, max_tokens: int = 400) -> str:
+    def _complete(self, prompt: str, max_tokens: int = 400) -> tuple[str, dict]:
         last_error = None
         for attempt in range(self.max_retries + 1):
             try:
@@ -86,13 +86,21 @@ class RagasScorer:
                         "temperature": 0.0,
                     },
                 }
+                t0 = time.perf_counter()
                 resp = requests.post(
                     f"{self.base_url}/api/generate",
                     json=payload,
                     timeout=self.timeout,
                 )
+                elapsed = time.perf_counter() - t0
                 resp.raise_for_status()
-                return resp.json().get("response", "")
+                data = resp.json()
+                meta = {
+                    "judge_prompt_tokens": data.get("prompt_eval_count", 0) or 0,
+                    "judge_completion_tokens": data.get("eval_count", 0) or 0,
+                    "judge_time_s": elapsed,
+                }
+                return data.get("response", ""), meta
             except Exception as exc:  # noqa: BLE001
                 last_error = exc
                 logger.warning("Judge request attempt %d failed: %s", attempt + 1, exc)
@@ -101,23 +109,23 @@ class RagasScorer:
                 time.sleep(2.0 * (attempt + 1))
         raise RuntimeError(f"unreachable: {last_error}")
 
-    def _complete_json(self, prompt: str, max_tokens: int = 400) -> dict | None:
+    def _complete_json(self, prompt: str, max_tokens: int = 400) -> tuple[dict | None, dict]:
         last_error = None
         for attempt in range(self.max_retries + 1):
             try:
-                text = self._complete(prompt, max_tokens=max_tokens)
+                text, meta = self._complete(prompt, max_tokens=max_tokens)
                 blob = _extract_json(text)
                 if blob is None:
                     raise ValueError("no JSON object found in response")
                 data = json.loads(blob)
                 if isinstance(data, dict):
-                    return data
+                    return data, meta
                 raise ValueError("JSON is not an object")
             except Exception as exc:  # noqa: BLE001
                 last_error = exc
                 logger.debug("JSON completion attempt %d failed: %s", attempt + 1, exc)
         logger.warning("Judge returned unusable output after %d attempts: %s", self.max_retries + 1, last_error)
-        return None
+        return None, {"judge_prompt_tokens": 0, "judge_completion_tokens": 0, "judge_time_s": 0.0}
 
     @staticmethod
     def _as_list(data: dict | None, key: str) -> list[str]:
@@ -130,6 +138,11 @@ class RagasScorer:
         if denominator <= 0:
             return None
         return numerator / denominator
+
+    def _accumulate_judge_meta(self, meta: dict) -> None:
+        self._judge_prompt_tokens += meta.get("judge_prompt_tokens", 0)
+        self._judge_completion_tokens += meta.get("judge_completion_tokens", 0)
+        self._judge_time_s += meta.get("judge_time_s", 0.0)
 
     @staticmethod
     def _verdict_value(item: dict, key: str) -> int:
@@ -188,7 +201,9 @@ class RagasScorer:
             f"Answer:\n{answer}\n"
             f'{JSON_HEADER}\n{{"statements": ["statement 1", "statement 2", ...]}}'
         )
-        result = self._as_list(self._complete_json(prompt, max_tokens=600), "statements")
+        data, meta = self._complete_json(prompt, max_tokens=600)
+        self._accumulate_judge_meta(meta)
+        result = self._as_list(data, "statements")
         if not result:
             fallback = (
                 "List every distinct factual claim in the following text as a separate item. "
@@ -196,7 +211,9 @@ class RagasScorer:
                 f"Text:\n{answer}\n"
                 f'{JSON_HEADER}\n{{"statements": ["1. ...", "2. ..."]}}'
             )
-            result = self._as_list(self._complete_json(fallback, max_tokens=600), "statements")
+            data2, meta2 = self._complete_json(fallback, max_tokens=600)
+            self._accumulate_judge_meta(meta2)
+            result = self._as_list(data2, "statements")
         return result
 
     def _nli_verdicts(self, statements: list[str], context: str) -> list[int] | None:
@@ -210,7 +227,8 @@ class RagasScorer:
             f"Statements:\n{stmts_json}\n"
             f'{JSON_HEADER}\n{{"verdicts": [{{"statement": "...", "verdict": 0}}]}}'
         )
-        data = self._complete_json(prompt, max_tokens=800)
+        data, meta = self._complete_json(prompt, max_tokens=800)
+        self._accumulate_judge_meta(meta)
         if not data or not isinstance(data.get("verdicts"), list):
             return None
         verdicts = [v for v in data["verdicts"] if isinstance(v, dict)]
@@ -238,7 +256,9 @@ class RagasScorer:
             f"Answer:\n{answer}\n"
             f'{JSON_HEADER}\n{{"questions": ["question 1", ...]}}'
         )
-        return self._as_list(self._complete_json(prompt), "questions")
+        data, meta = self._complete_json(prompt)
+        self._accumulate_judge_meta(meta)
+        return self._as_list(data, "questions")
 
     def _score_answer_relevancy(self, question: str, response: str) -> float | None:
         gen_questions = self._generated_questions(response, self.strictness)
@@ -271,7 +291,9 @@ class RagasScorer:
             f"Reference answer:\n{reference}\n"
             f'{JSON_HEADER}\n{{"statements": ["statement 1", "statement 2", ...]}}'
         )
-        result = self._as_list(self._complete_json(prompt, max_tokens=600), "statements")
+        data, meta = self._complete_json(prompt, max_tokens=600)
+        self._accumulate_judge_meta(meta)
+        result = self._as_list(data, "statements")
         if not result:
             fallback = (
                 "List every distinct factual claim in the following text as a separate item. "
@@ -279,7 +301,9 @@ class RagasScorer:
                 f"Text:\n{reference}\n"
                 f'{JSON_HEADER}\n{{"statements": ["1. ...", "2. ..."]}}'
             )
-            result = self._as_list(self._complete_json(fallback, max_tokens=600), "statements")
+            data2, meta2 = self._complete_json(fallback, max_tokens=600)
+            self._accumulate_judge_meta(meta2)
+            result = self._as_list(data2, "statements")
         return result
 
     def _attribution_verdicts(self, statements: list[str], context: str) -> list[int] | None:
@@ -293,7 +317,8 @@ class RagasScorer:
             f"Statements:\n{stmts_json}\n"
             f'{JSON_HEADER}\n{{"verdicts": [{{"statement": "...", "attributed": 1}}]}}'
         )
-        data = self._complete_json(prompt, max_tokens=800)
+        data, meta = self._complete_json(prompt, max_tokens=800)
+        self._accumulate_judge_meta(meta)
         if not data or not isinstance(data.get("verdicts"), list):
             return None
         verdicts = [v for v in data["verdicts"] if isinstance(v, dict)]
@@ -330,6 +355,9 @@ class RagasScorer:
         reference: str | None,
         metric_names: list[str],
     ) -> dict[str, float | None]:
+        self._judge_prompt_tokens = 0
+        self._judge_completion_tokens = 0
+        self._judge_time_s = 0.0
         row: dict[str, float | None] = {}
         if "faithfulness" in metric_names:
             row["faithfulness"] = self._score_faithfulness(question, response, contexts)
@@ -343,6 +371,9 @@ class RagasScorer:
                 row["context_recall"] = self._score_context_recall(
                     question, response, contexts, reference
                 )
+        row["judge_prompt_tokens"] = self._judge_prompt_tokens
+        row["judge_completion_tokens"] = self._judge_completion_tokens
+        row["judge_time_s"] = self._judge_time_s
         return row
 
     def score(

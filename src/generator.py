@@ -47,7 +47,7 @@ class Generator:
             num_ctx=8192,
         )
 
-    def answer(self, question: str, contexts: list[str]) -> str:
+    def answer(self, question: str, contexts: list[str]) -> dict:
         context_block = "\n\n".join(
             f"[Context {i + 1}]\n{c}" for i, c in enumerate(contexts)
         )
@@ -60,9 +60,20 @@ class Generator:
             SystemMessage(content=self.system_prompt),
             HumanMessage(content=user_prompt),
         ]
+        t0 = time.perf_counter()
         response = self._invoke_with_retry(messages)
+        elapsed = time.perf_counter() - t0
         text = response.content if isinstance(response.content, str) else str(response.content)
-        return text.strip()
+        meta = getattr(response, "response_metadata", {}) or {}
+        prompt_tokens = meta.get("prompt_eval_count", 0) or 0
+        completion_tokens = meta.get("eval_count", 0) or 0
+        return {
+            "answer": text.strip(),
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+            "generation_time_s": elapsed,
+        }
 
     def _invoke_with_retry(self, messages, max_retries: int = 5):
         for attempt in range(max_retries + 1):

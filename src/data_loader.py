@@ -226,11 +226,11 @@ def load_hotpot_records(directory: Path | None = None, file_patterns=None) -> li
             rid = rec.get("_id", "")
             context = rec.get("context", [])
             doc_text = _flatten_hotpot_context(context)
-            answer_ref = doc_text
+            answer_ref = str(rec.get("answer", "")).strip()
             records.append({
                 "id": str(rid),
                 "problem": question,
-                "solution": answer_ref,
+                "solution": answer_ref if answer_ref else None,
                 "doc_text": doc_text,
             })
     logger.info("Loaded %d hotpot records from %s", len(records), directory)

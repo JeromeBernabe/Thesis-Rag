@@ -59,11 +59,17 @@ def run_system_a(dataset: str, prompts: list[dict], logger_out: ResultLogger) ->
     answers = []
     contexts = []
     refs = []
+    gen_tokens = []
+    gen_times = []
+    retrieve_times = []
     for i, prompt in enumerate(prompts):
         result = baseline.answer(prompt["question"])
         answers.append(result["answer"])
         contexts.append(result["contexts"])
         refs.append(prompt.get("ground_truth"))
+        gen_tokens.append(result["total_tokens"])
+        gen_times.append(result["generation_time_s"])
+        retrieve_times.append(result["retrieval_time_s"])
         if (i + 1) % 10 == 0 or i == len(prompts) - 1:
             logger.info("  System A answered %d/%d prompts", i + 1, len(prompts))
     logger.info("[%s] Scoring System A with RAGAS (sequential)...", dataset)
@@ -81,6 +87,15 @@ def run_system_a(dataset: str, prompts: list[dict], logger_out: ResultLogger) ->
             answer_relevancy=scores[i].get("answer_relevancy"),
             context_recall=scores[i].get("context_recall"),
             retrieved_k=settings.BASELINE_K,
+            prompt_tokens=scores[i].get("judge_prompt_tokens"),
+            completion_tokens=scores[i].get("judge_completion_tokens"),
+            total_tokens=gen_tokens[i],
+            judge_prompt_tokens=scores[i].get("judge_prompt_tokens"),
+            judge_completion_tokens=scores[i].get("judge_completion_tokens"),
+            retrieval_time_s=retrieve_times[i],
+            generation_time_s=gen_times[i],
+            judge_time_s=scores[i].get("judge_time_s"),
+            total_time_s=retrieve_times[i] + gen_times[i] + scores[i].get("judge_time_s", 0.0),
         )
     logger.info("[%s] System A complete: %d rows logged.", dataset, len(prompts))
 
@@ -95,7 +110,7 @@ def run_system_b(dataset: str, prompts: list[dict], logger_out: ResultLogger) ->
     for i, prompt in enumerate(prompts):
         episode = dqn.train_episode(prompt["question"], prompt.get("ground_truth"))
         logger.info(
-            "  step %d/%d | k=%d | F=%.3f AR=%.3f CR=%.3f | R=%.3f | loss=%s | eps=%.3f",
+            "  step %d/%d | k=%d | F=%.3f AR=%.3f CR=%.3f | R=%.3f | loss=%s | eps=%.3f | %.1fs",
             i + 1,
             len(prompts),
             episode["k"],
@@ -105,6 +120,7 @@ def run_system_b(dataset: str, prompts: list[dict], logger_out: ResultLogger) ->
             episode["reward"],
             f"{episode['loss']:.4f}" if episode["loss"] is not None else "n/a",
             episode["epsilon"],
+            episode["total_time_s"],
         )
 
     logger.info("[%s] Phase B.2: inference (greedy policy) on %d prompts...", dataset, len(prompts))
@@ -112,12 +128,18 @@ def run_system_b(dataset: str, prompts: list[dict], logger_out: ResultLogger) ->
     contexts = []
     refs = []
     ks = []
+    inf_tokens = []
+    inf_gen_times = []
+    inf_retrieve_times = []
     for i, prompt in enumerate(prompts):
         result = dqn.answer(prompt["question"])
         answers.append(result["answer"])
         contexts.append(result["contexts"])
         refs.append(prompt.get("ground_truth"))
         ks.append(result["k"])
+        inf_tokens.append(result["total_tokens"])
+        inf_gen_times.append(result["generation_time_s"])
+        inf_retrieve_times.append(result["retrieval_time_s"])
     logger.info("[%s] Scoring System B with RAGAS (sequential)...", dataset)
     scores = scorer.score(
         [p["question"] for p in prompts],
@@ -133,6 +155,15 @@ def run_system_b(dataset: str, prompts: list[dict], logger_out: ResultLogger) ->
             answer_relevancy=scores[i].get("answer_relevancy"),
             context_recall=scores[i].get("context_recall"),
             retrieved_k=ks[i],
+            prompt_tokens=scores[i].get("judge_prompt_tokens"),
+            completion_tokens=scores[i].get("judge_completion_tokens"),
+            total_tokens=inf_tokens[i],
+            judge_prompt_tokens=scores[i].get("judge_prompt_tokens"),
+            judge_completion_tokens=scores[i].get("judge_completion_tokens"),
+            retrieval_time_s=inf_retrieve_times[i],
+            generation_time_s=inf_gen_times[i],
+            judge_time_s=scores[i].get("judge_time_s"),
+            total_time_s=inf_retrieve_times[i] + inf_gen_times[i] + scores[i].get("judge_time_s", 0.0),
         )
     from collections import Counter
 

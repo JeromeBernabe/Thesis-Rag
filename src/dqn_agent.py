@@ -100,10 +100,20 @@ class DQNAgent:
         arr = np.asarray(state, dtype=np.float32).reshape(1, -1)
         return torch.tensor(arr, dtype=torch.float32).to(DEVICE)
 
-    def greedy_action(self, state) -> int:
+    def q_values(self, state) -> list[float]:
+        """Q-value for every action, index i corresponding to k = i + ACTION_MIN_K.
+
+        Exposed as the single way to read the network's scores. Both
+        `run_experiment_logged.get_q_values` and `src.dqn_rag` need them, and
+        duplicating the torch plumbing in each place previously meant both had
+        to know about `q_net` and `DEVICE`.
+        """
         with torch.no_grad():
-            q_values = self.q_net(self._state_tensor(state))
-        return int(q_values.argmax(dim=1).item())
+            q = self.q_net(self._state_tensor(state)).squeeze(0)
+        return [float(q[i]) for i in range(self.num_actions)]
+
+    def greedy_action(self, state) -> int:
+        return int(max(range(self.num_actions), key=self.q_values(state).__getitem__))
 
     def select_action(self, state) -> int:
         if random.random() < self.epsilon:

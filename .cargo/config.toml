@@ -1,0 +1,19 @@
+# Local toolchain configuration for Windows builds without Visual Studio.
+#
+# This file lives at the repository root because Cargo discovers `.cargo/config.toml`
+# by walking up from the *current directory*, and builds are invoked from the root
+# as `scripts/cargo-x.cmd build --manifest-path desktop/src-tauri/Cargo.toml`.
+# scripts/cargo-x.cmd additionally exports CARGO_TARGET_*_LINKER and points
+# CC/RC/AR at the portable LLVM + cargo-xwin toolchain.
+#
+# If you DO have Visual Studio Build Tools with the C++ workload installed,
+# delete this file: the real linker is better than the shim.
+
+[target.x86_64-pc-windows-msvc]
+linker = "lld-link"
+# /ignore:4099 silences "failed to load reference ... .pdb" for every object in
+# the static CRT. The cargo-xwin libraries ship without their debug symbols and
+# the messages are pure noise, but there are hundreds of them. rust-lld reports
+# them as linker_messages warnings, which is why `cargo build` prints hundreds of
+# lines of nothing on every link.
+rustflags = ["-C", "link-arg=/ignore:4099"]
