@@ -17,6 +17,20 @@ function event(type: string, data: Record<string, unknown>, seq = 1): RunEvent {
   return { v: SCHEMA_VERSION, seq, ts_ms: 1000 + seq, run_id: 'run1', type, data }
 }
 
+/**
+ * Queue events and settle them before rendering.
+ *
+ * The store folds queued events into one update per frame, so `applyEvent` on its
+ * own has not reached the state these components read.
+ */
+function apply(...events: RunEvent[]): void {
+  const store = useRunStore.getState()
+  act(() => {
+    for (const event of events) store.applyEvent(event)
+    store.flushEvents()
+  })
+}
+
 describe('RunPage', () => {
   beforeEach(() => {
     resetApiMock()
@@ -105,24 +119,24 @@ describe('EventConsole', () => {
   })
 
   it('renders log lines in sequence with their level', () => {
-    useRunStore.getState().applyEvent(event('log', { level: 'info', message: 'hotpot: using 30000 documents' }, 1))
-    useRunStore.getState().applyEvent(event('log', { level: 'error', message: 'ollama unreachable' }, 2))
+    apply(
+      event('log', { level: 'info', message: 'hotpot: using 30000 documents' }, 1),
+      event('log', { level: 'error', message: 'ollama unreachable' }, 2),
+    )
     render(<EventConsole />)
     expect(screen.getByText('hotpot: using 30000 documents')).toBeInTheDocument()
     expect(screen.getByText('ollama unreachable')).toBeInTheDocument()
   })
 
   it('renders a non-log event as a timeline entry', () => {
-    useRunStore
-      .getState()
-      .applyEvent(event('retrieval', { system: 'A', index: 0, prompt_id: 'p1', k: 3 }, 1))
+    apply(event('retrieval', { system: 'A', index: 0, prompt_id: 'p1', k: 3 }, 1))
     render(<EventConsole />)
     expect(screen.getByText(/A retrieved k=3/)).toBeInTheDocument()
   })
 
   it('keeps embedding noise out of the console', () => {
     // Embeddings fire per chunk; showing them would bury everything else.
-    useRunStore.getState().applyEvent(event('embedding', { system: 'A', time_s: 0.01 }, 1))
+    apply(event('embedding', { system: 'A', time_s: 0.01 }, 1))
     render(<EventConsole />)
     expect(screen.getByText(/waiting for events/i)).toBeInTheDocument()
   })
@@ -141,9 +155,10 @@ describe('ProgressPanel', () => {
   })
 
   it('marks phases already passed', () => {
-    const store = useRunStore.getState()
-    store.applyEvent(event('phase', { phase: 'preflight', detail: 'checking' }, 1))
-    store.applyEvent(event('phase', { phase: 'system_a', detail: 'baseline' }, 2))
+    apply(
+      event('phase', { phase: 'preflight', detail: 'checking' }, 1),
+      event('phase', { phase: 'system_a', detail: 'baseline' }, 2),
+    )
     render(<ProgressPanel phases={PHASES} />)
     const done = screen.getByText('preflight').closest('li')
     expect(done?.className).toContain('text-success')
@@ -156,9 +171,10 @@ describe('ProgressPanel', () => {
     vi.useFakeTimers()
     try {
       vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
-      const store = useRunStore.getState()
-      store.applyEvent(event('run_started', { dataset: 'hotpot' }, 1))
-      store.applyEvent(event('phase', { phase: 'preflight', detail: 'checking' }, 2))
+      apply(
+        event('run_started', { dataset: 'hotpot' }, 1),
+        event('phase', { phase: 'preflight', detail: 'checking' }, 2),
+      )
 
       render(<ProgressPanel phases={PHASES} />)
       const clock = () => screen.getByText(/^(\d+ ms|\d+(\.\d)? s|\d+m \d+s|\d+h \d+m)$/)
@@ -178,9 +194,10 @@ describe('ProgressPanel', () => {
     vi.useFakeTimers()
     try {
       const setInterval = vi.spyOn(globalThis, 'setInterval')
-      const store = useRunStore.getState()
-      store.applyEvent(event('run_started', { dataset: 'hotpot' }, 1))
-      store.applyEvent(event('run_finished', { status: 'completed' }, 2))
+      apply(
+        event('run_started', { dataset: 'hotpot' }, 1),
+        event('run_finished', { status: 'completed' }, 2),
+      )
       render(<ProgressPanel phases={PHASES} />)
       expect(setInterval).not.toHaveBeenCalled()
     } finally {
@@ -224,9 +241,10 @@ describe('LivePromptTable', () => {
       judge_time_s: null,
       total_time_s: null,
     }
-    const store = useRunStore.getState()
-    store.applyEvent(event('prompt_completed', { system: 'A', index: 0, prompt_id: 'p1', k: 3, row }, 1))
-    store.applyEvent(event('prompt_completed', { system: 'B', index: 0, prompt_id: 'p1', k: 4, row: { ...row, system: 'B', retrieved_k: 4, answer: 'Kuffour' } }, 2))
+    apply(
+      event('prompt_completed', { system: 'A', index: 0, prompt_id: 'p1', k: 3, row }, 1),
+      event('prompt_completed', { system: 'B', index: 0, prompt_id: 'p1', k: 4, row: { ...row, system: 'B', retrieved_k: 4, answer: 'Kuffour' } }, 2),
+    )
 
     render(<LivePromptTable />)
     expect(screen.getByText('Who won?')).toBeInTheDocument()
@@ -256,8 +274,7 @@ describe('LivePromptTable', () => {
       judge_time_s: null,
       total_time_s: null,
     }
-    const store = useRunStore.getState()
-    store.applyEvent(
+    apply(
       event(
         'prompt_completed',
         {
@@ -277,8 +294,6 @@ describe('LivePromptTable', () => {
         },
         1,
       ),
-    )
-    store.applyEvent(
       event(
         'prompt_completed',
         {

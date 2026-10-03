@@ -144,6 +144,8 @@ Six commands are registered, tested at the store layer, and unreachable from the
 window, because no page offers an affordance for them: `run_in_progress`,
 `get_run_events`, `get_stats`, `get_projection`, `list_projections` and
 `import_legacy`. They are referenced only from `src/lib/api.ts` and its mock.
+`useRunStore.replay` is unreachable for the same reason - it exists to drive
+`get_run_events`, and nothing calls either.
 
 They cannot be driven from a script either - the app does not set
 `withGlobalTauri`, so `window.__TAURI__` does not exist and there is no way to
@@ -152,6 +154,32 @@ should be deleted; leaving them means a rename that breaks them is invisible to
 every gate here. `get_run_detail` already returns the stats and events that
 `get_stats` and `get_run_events` would return separately, which is worth weighing
 before wiring those two up.
+
+### Event volume
+
+A 20k-prompt run records around 243k events, four per prompt:
+`prompt_started`, `retrieval`, `generation` and `prompt_completed`. Applying each
+one as it arrived cost a Zustand update and a React render per event, and the
+WebView stopped responding.
+
+`runStore.applyEvent` now queues, and folds a whole frame's worth into a single
+update. The commit count is therefore independent of the event rate: the flood
+test pushes 243k events through and requires no more than
+`ceil(243000 / MAX_PENDING_EVENTS)` updates, where it used to be 243,000.
+
+Two details that are load-bearing:
+
+- The queue is flushed outright past `MAX_PENDING_EVENTS`, because
+  `requestAnimationFrame` does not fire in a hidden window and an app that was
+  minimised would otherwise accumulate events forever with nothing applying them.
+- The reduction reads an accumulator rather than the store, so the superseded-run
+  guard sees a run id adopted earlier in the same batch. Reading the store instead
+  would let a stale run's events back in.
+
+Nothing is dropped. The database keeps every event, and the console and live
+table are unchanged - only the number of updates changed. Note that
+`index_progress` is *not* the type worth coalescing: across a whole run it is 56
+events out of 243k, so thinning it would buy nothing while adding a timer.
 
 The WebView is attached over the DevTools protocol rather than through
 `tauri-driver`, which would need an `msedgedriver` matching the installed

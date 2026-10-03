@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 // module exports - rather than the wrapper module.
 vi.mock('@/lib/api', async () => (await import('@/test/apiMock')).apiMock)
 
-import { useRunStore } from '@/store/runStore'
+import { MAX_PENDING_EVENTS, useRunStore } from '@/store/runStore'
 import { SCHEMA_VERSION, isTerminal, type RunEvent } from '@/types/events'
 import { apiMock, resetApiMock } from '@/test/apiMock'
 
@@ -44,6 +44,19 @@ function row(overrides: Record<string, unknown> = {}) {
   }
 }
 
+/**
+ * Queue events and settle them.
+ *
+ * The store batches to a frame now, so `applyEvent` alone leaves the queue
+ * unapplied. Tests go through `flushEvents` rather than reaching past the public
+ * API, which means they exercise the same path the app does.
+ */
+function apply(...events: RunEvent[]): void {
+  const store = useRunStore.getState()
+  for (const event of events) store.applyEvent(event)
+  store.flushEvents()
+}
+
 describe('runStore', () => {
   beforeEach(() => {
     resetApiMock()
@@ -58,15 +71,14 @@ describe('runStore', () => {
   })
 
   it('tracks the run id from the first event', () => {
-    useRunStore.getState().applyEvent(event('run_started', { dataset: 'hotpot', prompt_count: 2 }, 1))
+    apply(event('run_started', { dataset: 'hotpot', prompt_count: 2 }, 1))
     expect(useRunStore.getState().activeRunId).toBe('run1')
   })
 
   it('accumulates phases in order', () => {
-    const store = useRunStore.getState()
-    store.applyEvent(event('run_started', { dataset: 'hotpot' }, 1))
-    store.applyEvent(event('phase', { phase: 'preflight', detail: 'checking' }, 2))
-    store.applyEvent(event('phase', { phase: 'system_a', detail: 'baseline' }, 3))
+    apply(event('run_started', { dataset: 'hotpot' }, 1))
+    apply(event('phase', { phase: 'preflight', detail: 'checking' }, 2))
+    apply(event('phase', { phase: 'system_a', detail: 'baseline' }, 3))
     const { progress, status } = useRunStore.getState()
     expect(progress.completedPhases).toEqual(['preflight', 'system_a'])
     expect(progress.phase).toBe('system_a')
@@ -75,15 +87,13 @@ describe('runStore', () => {
   })
 
   it('does not duplicate a phase that is re-announced', () => {
-    const store = useRunStore.getState()
-    store.applyEvent(event('phase', { phase: 'preflight', detail: 'a' }, 1))
-    store.applyEvent(event('phase', { phase: 'preflight', detail: 'b' }, 2))
+    apply(event('phase', { phase: 'preflight', detail: 'a' }, 1))
+    apply(event('phase', { phase: 'preflight', detail: 'b' }, 2))
     expect(useRunStore.getState().progress.completedPhases).toEqual(['preflight'])
   })
 
   it('stores a completed prompt row with its metrics and retrieved ids', () => {
-    const store = useRunStore.getState()
-    store.applyEvent(event('prompt_completed', { system: 'A', index: 0, prompt_id: 'p1', k: 3, row: row() }, 1))
+    apply(event('prompt_completed', { system: 'A', index: 0, prompt_id: 'p1', k: 3, row: row() }, 1))
     const { rows } = useRunStore.getState()
     expect(rows).toHaveLength(1)
     expect(rows[0]).toMatchObject({
@@ -98,9 +108,8 @@ describe('runStore', () => {
   })
 
   it('replaces a re-delivered row instead of duplicating it', () => {
-    const store = useRunStore.getState()
-    store.applyEvent(event('prompt_completed', { system: 'A', index: 0, prompt_id: 'p1', k: 3, row: row() }, 1))
-    store.applyEvent(
+    apply(event('prompt_completed', { system: 'A', index: 0, prompt_id: 'p1', k: 3, row: row() }, 1))
+    apply(
       event('prompt_completed', { system: 'A', index: 0, prompt_id: 'p1', k: 5, row: row({ retrieved_k: 5, faithfulness: 0.4 }) }, 2),
     )
     const { rows } = useRunStore.getState()
@@ -110,9 +119,8 @@ describe('runStore', () => {
   })
 
   it('keeps A and B rows for the same prompt apart', () => {
-    const store = useRunStore.getState()
-    store.applyEvent(event('prompt_completed', { system: 'A', index: 0, prompt_id: 'p1', k: 3, row: row() }, 1))
-    store.applyEvent(event('prompt_completed', { system: 'B', index: 0, prompt_id: 'p1', k: 4, row: row({ system: 'B' }) }, 2))
+    apply(event('prompt_completed', { system: 'A', index: 0, prompt_id: 'p1', k: 3, row: row() }, 1))
+    apply(event('prompt_completed', { system: 'B', index: 0, prompt_id: 'p1', k: 4, row: row({ system: 'B' }) }, 2))
     const { rows } = useRunStore.getState()
     expect(rows).toHaveLength(2)
     expect(rows.map((r) => r.system).sort()).toEqual(['A', 'B'])
@@ -120,62 +128,57 @@ describe('runStore', () => {
 
   it('tolerates a prompt_completed without a row payload', () => {
     // An older sidecar sends only the envelope keys.
-    const store = useRunStore.getState()
-    store.applyEvent(event('prompt_completed', { system: 'A', index: 0, prompt_id: 'p1', k: 3 }, 1))
+    apply(event('prompt_completed', { system: 'A', index: 0, prompt_id: 'p1', k: 3 }, 1))
     expect(useRunStore.getState().rows).toHaveLength(0)
     expect(useRunStore.getState().logs.length).toBeGreaterThan(0)
   })
 
   it('counts prompts per system', () => {
-    const store = useRunStore.getState()
-    store.applyEvent(event('prompt_completed', { system: 'A', index: 0, prompt_id: 'p1', k: 3, row: row() }, 1))
-    store.applyEvent(event('prompt_completed', { system: 'A', index: 1, prompt_id: 'p2', k: 3, row: row({ prompt_id: 'p2' }) }, 2))
+    apply(event('prompt_completed', { system: 'A', index: 0, prompt_id: 'p1', k: 3, row: row() }, 1))
+    apply(event('prompt_completed', { system: 'A', index: 1, prompt_id: 'p2', k: 3, row: row({ prompt_id: 'p2' }) }, 2))
     expect(useRunStore.getState().progress.promptsDone).toEqual({ A: 2 })
   })
 
   it('accumulates training steps in order', () => {
-    const store = useRunStore.getState()
-    store.applyEvent(event('train_step', { step: 1, k: 1, reward: 0.1, loss: 0.5, epsilon: 1, q_values: [0.1, 0.2] }, 1))
-    store.applyEvent(event('train_step', { step: 2, k: 3, reward: 0.4, loss: 0.2, epsilon: 0.5, q_values: [0.1, 0.2] }, 2))
+    apply(event('train_step', { step: 1, k: 1, reward: 0.1, loss: 0.5, epsilon: 1, q_values: [0.1, 0.2] }, 1))
+    apply(event('train_step', { step: 2, k: 3, reward: 0.4, loss: 0.2, epsilon: 0.5, q_values: [0.1, 0.2] }, 2))
     const { training } = useRunStore.getState()
     expect(training.map((t) => t.step)).toEqual([1, 2])
     expect(training[1].k).toBe(3)
   })
 
   it('records judge calls so the slow phase is visible', () => {
-    const store = useRunStore.getState()
-    store.applyEvent(event('ragas', { system: 'A', prompt_id: 'p1', faithfulness: 0.9 }, 1))
-    store.applyEvent(event('ragas', { system: 'A', prompt_id: 'p2', faithfulness: 0.8 }, 2))
+    apply(event('ragas', { system: 'A', prompt_id: 'p1', faithfulness: 0.9 }, 1))
+    apply(event('ragas', { system: 'A', prompt_id: 'p2', faithfulness: 0.8 }, 2))
     expect(useRunStore.getState().progress.judgedCount).toBe(2)
   })
 
   it('completes on run_finished and records the error on run_failed', () => {
-    const store = useRunStore.getState()
-    store.applyEvent(event('run_failed', { error: 'judge exploded', traceback: '...' }, 1))
+    apply(event('run_failed', { error: 'judge exploded', traceback: '...' }, 1))
     const state = useRunStore.getState()
     expect(state.status).toBe('failed')
     expect(state.runError).toBe('judge exploded')
   })
 
   it('marks completed on run_finished', () => {
-    const store = useRunStore.getState()
-    store.applyEvent(event('run_finished', { run_id: 'run1', duration_s: 12 }, 1))
+    apply(event('run_finished', { run_id: 'run1', duration_s: 12 }, 1))
     expect(useRunStore.getState().status).toBe('completed')
   })
 
   it('ignores events from a superseded run', () => {
-    const store = useRunStore.getState()
-    store.applyEvent(event('run_started', { dataset: 'hotpot' }, 1, 'run2'))
-    store.applyEvent(event('log', { level: 'info', message: 'stale' }, 2, 'run1'))
+    apply(event('run_started', { dataset: 'hotpot' }, 1, 'run2'))
+    apply(event('log', { level: 'info', message: 'stale' }, 2, 'run1'))
     expect(useRunStore.getState().activeRunId).toBe('run2')
     expect(useRunStore.getState().logs.some((l) => l.message === 'stale')).toBe(false)
   })
 
   it('keeps log lines, and caps them', () => {
-    const store = useRunStore.getState()
-    for (let i = 1; i <= 600; i += 1) {
-      store.applyEvent(event('log', { level: 'info', message: `line ${i}` }, i))
-    }
+    // One batch, not 600 flushes: this is what a chatty run actually looks like.
+    apply(
+      ...Array.from({ length: 600 }, (_, i) =>
+        event('log', { level: 'info', message: `line ${i + 1}` }, i + 1),
+      ),
+    )
     const { logs } = useRunStore.getState()
     expect(logs.length).toBeLessThanOrEqual(500)
     // The newest lines are the ones kept.
@@ -183,9 +186,10 @@ describe('runStore', () => {
   })
 
   it('marks warnings and errors distinctly', () => {
-    const store = useRunStore.getState()
-    store.applyEvent(event('log', { level: 'warning', message: 'careful' }, 1))
-    store.applyEvent(event('log', { level: 'error', message: 'broken' }, 2))
+    apply(
+      event('log', { level: 'warning', message: 'careful' }, 1),
+      event('log', { level: 'error', message: 'broken' }, 2),
+    )
     expect(useRunStore.getState().logs.map((l) => l.level)).toEqual(['warning', 'error'])
   })
 
@@ -204,9 +208,8 @@ describe('runStore', () => {
   })
 
   it('clears everything on reset', () => {
-    const store = useRunStore.getState()
-    store.applyEvent(event('run_finished', { duration_s: 1 }, 1))
-    store.reset()
+    apply(event('run_finished', { duration_s: 1 }, 1))
+    useRunStore.getState().reset()
     const state = useRunStore.getState()
     expect(state.status).toBe('idle')
     expect(state.activeRunId).toBeNull()
@@ -236,6 +239,158 @@ describe('runStore', () => {
     apiMock.cancelRun.mockResolvedValue('run9')
     await useRunStore.getState().cancelRun()
     expect(useRunStore.getState().status).toBe('cancelled')
+  })
+})
+
+describe('event batching', () => {
+  beforeEach(() => {
+    resetApiMock()
+    useRunStore.getState().reset()
+  })
+
+  it('folds a burst into one update rather than one per event', () => {
+    // The regression. A 20k-prompt run emits a few hundred thousand events, and
+    // committing each one separately meant a React render per event, which wedged
+    // the WebView. What matters is the number of commits, not the number of
+    // events.
+    let commits = 0
+    const unsubscribe = useRunStore.subscribe(() => {
+      commits += 1
+    })
+
+    const store = useRunStore.getState()
+    for (let seq = 1; seq <= 500; seq += 1) {
+      store.applyEvent(event('log', { level: 'info', message: `line ${seq}` }, seq))
+    }
+
+    expect(commits).toBe(0)
+    expect(useRunStore.getState().logs).toHaveLength(0)
+
+    store.flushEvents()
+
+    expect(commits).toBe(1)
+    expect(useRunStore.getState().logs).toHaveLength(500)
+    unsubscribe()
+  })
+
+  it('applies a batch in order, and the final event wins', () => {
+    apply(
+      event('phase', { phase: 'preflight', detail: 'first' }, 1),
+      event('index_progress', { done: 10, total: 30000 }, 2),
+      event('phase', { phase: 'system_a', detail: 'second' }, 3),
+      event('index_progress', { done: 20, total: 30000 }, 4),
+    )
+    const { progress } = useRunStore.getState()
+    expect(progress.completedPhases).toEqual(['preflight', 'system_a'])
+    expect(progress.phaseDetail).toBe('second')
+    // Index progress is pure state, so only the newest of a run of them matters.
+    expect(progress.indexDone).toBe(20)
+    expect(progress.indexTotal).toBe(30000)
+  })
+
+  it('rejects a superseded run mid-batch', () => {
+    // The guard has to read the accumulator, not the state the batch started
+    // from: the run id that matters is the one an earlier event in this same
+    // batch adopted.
+    apply(
+      event('run_started', { dataset: 'hotpot' }, 1, 'run2'),
+      event('log', { level: 'info', message: 'stale' }, 2, 'run1'),
+      event('log', { level: 'info', message: 'current' }, 3, 'run2'),
+    )
+    const state = useRunStore.getState()
+    expect(state.activeRunId).toBe('run2')
+    expect(state.logs.some((l) => l.message === 'stale')).toBe(false)
+    expect(state.logs.some((l) => l.message === 'current')).toBe(true)
+  })
+
+  it('drops queued events on reset', () => {
+    // Otherwise a late frame would fold the previous run's events into the idle
+    // state, where there is no run id left to reject them as stale.
+    const store = useRunStore.getState()
+    store.applyEvent(event('log', { level: 'info', message: 'stale' }, 1))
+    store.reset()
+    store.flushEvents()
+    expect(useRunStore.getState().logs).toHaveLength(0)
+    expect(useRunStore.getState().activeRunId).toBeNull()
+  })
+
+  it('flushes on its own once the queue gets deep', () => {
+    // A hidden window never gets a frame, so waiting for one forever would grow
+    // the queue without bound. Past the cap it commits immediately, which is why
+    // the state covers everything up to the cap and holds the rest.
+    const store = useRunStore.getState()
+    for (let seq = 1; seq <= 4200; seq += 1) {
+      store.applyEvent(event('log', { level: 'info', message: `line ${seq}` }, seq))
+    }
+    expect(useRunStore.getState().logs.at(-1)?.message).toBe('line 4000')
+
+    store.flushEvents()
+    expect(useRunStore.getState().logs.at(-1)?.message).toBe('line 4200')
+  })
+
+  it('refreshes the run history once for a terminal event in a batch', async () => {
+    apply(
+      event('log', { level: 'info', message: 'working' }, 1),
+      event('run_finished', { run_id: 'run1', duration_s: 4 }, 2),
+    )
+    await vi.waitFor(() => expect(apiMock.listRuns).toHaveBeenCalled())
+    expect(apiMock.listRuns).toHaveBeenCalledTimes(1)
+  })
+
+  it('stays at one commit for a whole run-sized flood', () => {
+    // The scale that actually wedged the WebView: a 20k-prompt run recorded
+    // 243k events, four per prompt. Nothing about that many events may reach the
+    // store as that many updates, so this is the guard that the number of commits
+    // is independent of the number of events.
+    let commits = 0
+    const unsubscribe = useRunStore.subscribe(() => {
+      commits += 1
+    })
+
+    const store = useRunStore.getState()
+    const total = 243_000
+    for (let i = 0; i < total / 4; i += 1) {
+      store.applyEvent(event('prompt_started', { system: 'A', index: i, total: 60_000 }, i * 4 + 1))
+      store.applyEvent(event('retrieval', { system: 'A', index: i, prompt_id: `p${i}`, k: 3 }, i * 4 + 2))
+      store.applyEvent(event('generation', { system: 'A', index: i, answer: 'yes' }, i * 4 + 3))
+      store.applyEvent(event('ragas', { system: 'A', prompt_id: `p${i}` }, i * 4 + 4))
+    }
+
+    store.flushEvents()
+
+    // Every event was still applied; only the updates were collapsed. One commit
+    // per frame in the app, and here one per `MAX_PENDING_EVENTS` because the loop
+    // never yields - either way, a few dozen instead of 243 thousand.
+    expect(useRunStore.getState().logs.length).toBeLessThanOrEqual(500)
+    expect(useRunStore.getState().progress.judgedCount).toBe(total / 4)
+    expect(commits).toBeGreaterThan(0)
+    expect(commits).toBeLessThanOrEqual(Math.ceil(total / MAX_PENDING_EVENTS))
+    unsubscribe()
+  })
+
+  it('replays a long timeline in the same number of commits as a short one', () => {
+    // Replay used to apply every recorded event with its own render, which is the
+    // same wedge the batching removes. What matters is that the commit count does
+    // not grow with the length of the timeline - not that it is some exact number,
+    // since clearing and applying are two separate updates by construction.
+    const timeline = (n: number) =>
+      Array.from({ length: n }, (_, i) => event('log', { level: 'info', message: `line ${i + 1}` }, i + 1))
+
+    const commitsFor = (n: number) => {
+      useRunStore.getState().reset()
+      let commits = 0
+      const unsubscribe = useRunStore.subscribe(() => {
+        commits += 1
+      })
+      useRunStore.getState().replay('run1', timeline(n))
+      unsubscribe()
+      expect(useRunStore.getState().logs).toHaveLength(n)
+      return commits
+    }
+
+    const few = commitsFor(5)
+    const many = commitsFor(500)
+    expect(many).toBe(few)
   })
 })
 
