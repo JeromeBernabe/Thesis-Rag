@@ -486,20 +486,81 @@ fn describe_exit(code: &Option<i32>, stderr_tail: &str) -> String {
     }
 }
 
+/// How long `taskkill` gets before it is abandoned.
+///
+/// The helper normally returns in milliseconds. A generous bound is the point:
+/// this exists so that a `taskkill` which never returns cannot prevent the
+/// direct-handle fallback from ever running.
+const TASKKILL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Run `command` to completion, or abandon it after `timeout`.
+///
+/// `None` means it was abandoned, could not be started, or could not be
+/// interrogated - every outcome where "did it work?" has no usable answer, and
+/// the caller has to do the work itself.
+///
+/// `spawn` plus a poll rather than `status()` or `output()`. Those two block until
+/// the child exits, so a helper that never returns would hang the caller with no
+/// way to reach a fallback - the exact failure a fallback exists to prevent. On
+/// timeout the helper is killed and reaped, because leaving a wedged one behind is
+/// worse than never having run it.
+///
+/// Output goes to null rather than a pipe. Nothing reads it, and a pipe nobody
+/// drains is one more way for a helper to wedge instead of exiting.
+fn run_bounded(
+    mut command: Command,
+    timeout: std::time::Duration,
+) -> Option<std::process::ExitStatus> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut helper = command.spawn().ok()?;
+
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match helper.try_wait() {
+            Ok(Some(status)) => return Some(status),
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    // Abandoned, not "failed". Reap it so a wedged helper does
+                    // not leak, but report no status: the only thing the caller
+                    // can conclude is that the work still has to be done by hand.
+                    let _ = helper.kill();
+                    let _ = helper.wait();
+                    return None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
+/// Run `taskkill /T` for `pid`, bounded, and report whether it succeeded.
+///
+/// Returns `false` for every outcome that is not an explicit success: not found
+/// on `PATH`, denied, the pid unknown, or the helper abandoned. They all mean the
+/// same thing to the caller, which is that the tree still has to be killed by hand.
+fn taskkill_tree(pid: u32) -> bool {
+    let mut command = Command::new("taskkill");
+    command.args(["/F", "/T", "/PID", &pid.to_string()]);
+    run_bounded(command, TASKKILL_TIMEOUT).is_some_and(|status| status.success())
+}
+
 /// Kill the child and any processes it started, and wait for it to actually go.
 ///
 /// `taskkill /T` is tried first because it is the only thing that reaches
 /// grandchildren: an orphaned helper can keep the CUDA context alive and break
-/// the next run. But it is an external program, so it can be missing, denied or
-/// simply not know the pid, and every one of those used to end the same way -
-/// ignored, followed by an unbounded `child.wait()`. The run would then keep
+/// the next run. But it is an external program, so it can be missing, denied,
+/// simply not know the pid, or hang - and every one of those used to end the same
+/// way, ignored, followed by an unbounded `child.wait()`. The run would then keep
 /// going, and because callers include the Tauri main thread, so would the whole
 /// app: a Cancel button that freezes the window until the run finishes on its
 /// own.
 ///
-/// So the fallbacks matter more than the primary path: if `taskkill` did not
-/// report success, ask the handle to kill the child directly, and only then
-/// wait, with a bound.
+/// So the fallbacks matter more than the primary path: `taskkill` is bounded and
+/// its failure is not swallowed, and the direct handle is always tried after it.
 fn kill_tree(active: &ActiveRun) {
     let Ok(mut guard) = active.child.lock() else {
         return;
@@ -507,16 +568,7 @@ fn kill_tree(active: &ActiveRun) {
     let Some(child) = guard.as_mut() else { return };
     let pid = child.id();
 
-    let killed_tree = Command::new("taskkill")
-        .args(["/F", "/T", "/PID", &pid.to_string()])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|status| status.success())
-        // Treat "could not be started" as a failure rather than assuming success.
-        .unwrap_or(false);
-
-    if !killed_tree {
+    if !taskkill_tree(pid) {
         // Best effort on the direct handle. It cannot reach grandchildren, but it
         // is enough to stop the run, which is what the user asked for.
         let _ = child.kill();
@@ -998,6 +1050,68 @@ mod tests {
     /// finished by itself. Ten seconds is longer than any test should need, so
     /// this is bounded loosely on purpose - the assertion is that it returns at
     /// all, not how fast.
+    /// A `cmd /c` invocation of `script`, owned so it can be handed to
+    /// `run_bounded` - `args` borrows, and `Command` is not `Clone`.
+    fn cmd(script: &str) -> Command {
+        let mut command = Command::new("cmd");
+        command.args(["/c", script]);
+        command
+    }
+
+    #[test]
+    fn a_command_that_never_returns_is_abandoned_at_the_timeout() {
+        // The regression this guards, on the primitive itself so it can be
+        // provoked. `status()` and `output()` block until the child exits, so a
+        // helper that never returned would hang `cancel_run` with the direct
+        // handle fallback unreachable - the button would simply spin.
+        //
+        // `ping -n 600` is a process that outlives the timeout by two orders of
+        // magnitude, which is as close to "never returns" as a test can get.
+        let started = std::time::Instant::now();
+        let status = run_bounded(
+            cmd("ping -n 600 127.0.0.1"),
+            std::time::Duration::from_millis(500),
+        );
+        let elapsed = started.elapsed();
+
+        assert!(
+            status.is_none(),
+            "an abandoned command must not report success, or the caller would \
+             skip the fallback for a process that is still running"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "run_bounded waited {elapsed:?} past its 500ms timeout"
+        );
+    }
+
+    #[test]
+    fn a_command_that_finishes_in_time_reports_its_status() {
+        // The other half: bounding must not turn success into failure, or every
+        // cancel would fall through to the direct handle for no reason.
+        let ok = run_bounded(cmd("exit 0"), std::time::Duration::from_secs(30))
+            .expect("should have run to completion");
+        assert!(ok.success(), "exit 0 should report success");
+
+        let bad = run_bounded(cmd("exit 3"), std::time::Duration::from_secs(30))
+            .expect("should have run to completion");
+        assert!(!bad.success(), "exit 3 should report failure");
+    }
+
+    #[test]
+    fn a_command_that_cannot_start_is_reported_as_such() {
+        let started = std::time::Instant::now();
+        let status = run_bounded(
+            Command::new("definitely-not-a-real-command-9f2c"),
+            std::time::Duration::from_secs(30),
+        );
+        assert!(
+            status.is_none(),
+            "a missing program is neither a success nor a usable status"
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
     #[test]
     fn killing_returns_even_when_the_process_outlives_it() {
         let child = std::process::Command::new("cmd")
@@ -1040,6 +1154,86 @@ mod tests {
             .output()
             .map(|out| String::from_utf8_lossy(&out.stdout).contains(&pid.to_string()))
             .unwrap_or(false)
+    }
+
+    #[test]
+    fn taskkill_reports_success_for_a_real_process() {
+        let mut child = std::process::Command::new("cmd")
+            .args(["/c", "ping", "-n", "30", "127.0.0.1"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn");
+        let pid = child.id();
+        assert!(pid_is_alive(pid), "the test process should be running");
+
+        assert!(taskkill_tree(pid), "taskkill should succeed on a live pid");
+        // Reaped by taskkill, so this handle no longer describes a live process.
+        let _ = child.wait();
+        assert!(!pid_is_alive(pid), "taskkill left the process running");
+    }
+
+    #[test]
+    fn taskkill_failure_falls_back_to_the_direct_handle() {
+        // A pid that is already gone makes taskkill fail. The point is that
+        // `kill_tree` still ends up killing the child, because the fallback is
+        // what runs when taskkill reports anything other than success.
+        let child = std::process::Command::new("cmd")
+            .args(["/c", "ping", "-n", "30", "127.0.0.1"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn");
+        let pid = child.id();
+
+        let active = ActiveRun {
+            run_id: "run1".into(),
+            child: Arc::new(Mutex::new(Some(child))),
+            cancelled: Arc::new(AtomicBool::new(true)),
+        };
+        kill_tree(&active);
+
+        assert!(!pid_is_alive(pid), "the child outlived kill_tree");
+    }
+
+    #[test]
+    fn a_taskkill_that_never_returns_is_abandoned_rather_than_waited_on() {
+        // The regression this guards. `status()` and `output()` block until the
+        // helper exits, so a wedged taskkill meant the direct-handle fallback was
+        // never reached and `cancel_run` never returned - the button just spun.
+        //
+        // A helper that cannot exit is simulated with a process that outlives the
+        // timeout by a wide margin. `kill_tree` has to return anyway.
+        let child = std::process::Command::new("cmd")
+            .args(["/c", "ping", "-n", "600", "127.0.0.1"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn");
+        let pid = child.id();
+        let active = ActiveRun {
+            run_id: "run1".into(),
+            child: Arc::new(Mutex::new(Some(child))),
+            cancelled: Arc::new(AtomicBool::new(true)),
+        };
+
+        let started = std::time::Instant::now();
+        kill_tree(&active);
+        let elapsed = started.elapsed();
+
+        // One bound for taskkill plus one for the child wait, with slack for a
+        // loaded machine. The point is that it is bounded at all.
+        let ceiling = TASKKILL_TIMEOUT + std::time::Duration::from_secs(20);
+        assert!(
+            elapsed < ceiling,
+            "kill_tree took {elapsed:?}, past the {ceiling:?} ceiling"
+        );
+
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &pid.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
     }
 
     /// An `ActiveRun` wrapping a real process that is already gone.
