@@ -1,4 +1,6 @@
+import os
 import random
+import time
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,6 +11,44 @@ import torch.nn as nn
 
 from config import settings
 from config.settings import DEVICE
+
+# How many superseded checkpoints to keep per dataset. Three is enough to roll
+# back a bad training run or compare two without letting `checkpoints/` grow
+# without bound - `save` runs after every episode, so an unbounded history
+# would rewrite the directory hundreds of times per run.
+CHECKPOINT_VERSIONS = 3
+
+
+def _rotate(path: Path, keep: int) -> None:
+    """Move `path` aside as `<stem>.<timestamp>.pth` and prune to `keep` copies.
+
+    Timestamped rather than numbered because two saves inside the same second
+    are possible on a fast episode, and a counter would silently overwrite the
+    first. Ordering is taken from the filename, which sorts lexicographically
+    for this format, so the newest is always last.
+    """
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    target = path.with_name(f"{path.stem}.{stamp}{path.suffix}")
+    n = 0
+    while target.exists():
+        n += 1
+        target = path.with_name(f"{path.stem}.{stamp}-{n}{path.suffix}")
+    os.replace(path, target)
+
+    if keep <= 0:
+        return
+    # Match the rotated copies only, so an unrelated file sharing the stem (the
+    # live checkpoint, or a `.tmp` mid-write) is never a pruning candidate.
+    prefix, suffix = f"{path.stem}.", path.suffix
+    versions = sorted(
+        p for p in path.parent.glob(f"{prefix}*{suffix}")
+        if p.name != path.name and p.is_file()
+    )
+    for stale in versions[:-keep] if keep else versions:
+        try:
+            stale.unlink()
+        except OSError:
+            pass
 
 
 class QNetwork(nn.Module):
@@ -143,26 +183,72 @@ class DQNAgent:
     def decay_epsilon(self) -> None:
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
 
-    def save(self, path: Path | None = None) -> None:
+    def save(self, path: Path | None = None, keep: int | None = None) -> None:
+        """Write the model atomically, rotating older versions aside.
+
+        Two things were wrong with writing straight to `path`. A crash partway
+        through `torch.save` left a truncated file that then failed to load on
+        the next run, so an interrupted save destroyed the model that was
+        already there. And the file was overwritten outright, which is how a
+        two-prompt smoke test replaced weeks of training with two gradient
+        steps and no warning.
+
+        So the bytes go to a sibling temp file, are fsynced, and only then
+        replace the target - after which the previous version is kept as
+        `<stem>.<timestamp>.pth` and the oldest is pruned. `save` runs after
+        every training episode, so this has to stay cheap; it does no extra
+        disk work beyond the copy it already performed.
+        """
         path = Path(path) if path is not None else self.checkpoint_path
+        keep = CHECKPOINT_VERSIONS if keep is None else keep
         path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save(
-            {
-                "q_net": {k: v.cpu() for k, v in self.q_net.state_dict().items()},
-                "target_net": {k: v.cpu() for k, v in self.target_net.state_dict().items()},
-                "optimizer": {k: v.cpu() if isinstance(v, torch.Tensor) else v
-                              for k, v in self.optimizer.state_dict().items()},
-                "epsilon": self.epsilon,
-                "steps": self.steps,
+
+        payload = {
+            "q_net": {k: v.cpu() for k, v in self.q_net.state_dict().items()},
+            "target_net": {k: v.cpu() for k, v in self.target_net.state_dict().items()},
+            "optimizer": {
+                k: v.cpu() if isinstance(v, torch.Tensor) else v
+                for k, v in self.optimizer.state_dict().items()
             },
-            path,
-        )
+            "epsilon": self.epsilon,
+            "steps": self.steps,
+        }
+
+        # Same temp-then-rename shape as `src.logger.ResultLogger`, and for the
+        # same reason: the destination must never be observed half-written.
+        tmp = path.with_name(path.name + ".tmp")
+        try:
+            with open(tmp, "wb") as f:
+                torch.save(payload, f)
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except OSError:
+                    # Some Windows handles refuse fsync. The rename below is
+                    # still atomic, so this costs durability, not correctness.
+                    pass
+            # Preserve what is being replaced before it is gone.
+            if keep > 0 and path.exists():
+                _rotate(path, keep)
+            os.replace(tmp, path)
+        finally:
+            # A failed save must not leave the temp file to be mistaken for a
+            # checkpoint, or to be picked up by the next rotation.
+            if tmp.exists():
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
 
     def load(self, path: Path | None = None) -> None:
         path = Path(path) if path is not None else self.checkpoint_path
         if not path.exists():
             raise FileNotFoundError(f"checkpoint not found: {path}")
-        ckpt = torch.load(path, map_location=DEVICE)
+        # Pinned rather than inherited: torch 2.6 flipped this default, and
+        # silently changing how a pickle is interpreted between runs is not
+        # something to leave to an ambient version number. The payload is plain
+        # tensors and scalars, so the safe mode loads it.
+        ckpt = torch.load(path, map_location=DEVICE, weights_only=True)
         self.q_net.load_state_dict(ckpt["q_net"])
         self.target_net.load_state_dict(ckpt["target_net"])
         self.optimizer.load_state_dict(ckpt["optimizer"])

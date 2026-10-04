@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+import torch
 
 # `src/` sits outside the package, and pytest.ini restricts collection to
 # bench_bridge/tests, so the repo root has to be importable from here.
@@ -145,6 +146,136 @@ def test_creates_missing_parent_directory(tmp_path):
     path = tmp_path / "nested" / "deeper" / "results.csv"
     ResultLogger(path).log(**sample())
     assert path.exists()
+
+
+# --------------------------------------------------------------------------
+# Trained checkpoints must survive an interrupted save
+# --------------------------------------------------------------------------
+
+
+def agent(checkpoint_path):
+    from src.dqn_agent import DQNAgent
+
+    return DQNAgent(checkpoint_path=checkpoint_path)
+
+
+def interrupting_save(monkeypatch):
+    """Make the next `torch.save` die after truncating its destination.
+
+    Real `torch.save(obj, path)` opens the destination itself, which truncates
+    it before the first byte is written. A fake that only raises would leave the
+    old file untouched under *both* implementations and so would prove nothing,
+    so this reproduces the truncation explicitly.
+    """
+    def _save(obj, f, *args, **kwargs):
+        target = f if isinstance(f, (str, Path)) else f.name
+        with open(target, "wb") as fh:
+            fh.write(b"\x80\x02truncated-mid-save")
+            fh.flush()
+        raise OSError("killed mid-save")
+
+    monkeypatch.setattr(torch, "save", _save)
+
+
+def test_a_failed_save_leaves_the_previous_checkpoint_loadable(tmp_path, monkeypatch):
+    """The defect: `torch.save` wrote straight to the live path.
+
+    An interrupted save truncated the file and then died, so the checkpoint that
+    was already there could not be loaded next run - the model was lost as
+    collateral damage of an unrelated failure. Training saves after every
+    episode, so this was reachable constantly.
+    """
+    path = tmp_path / "dqn_model_hotpot.pth"
+    good = agent(path)
+    good.epsilon = 0.5
+    good.save(path, keep=0)
+
+    interrupting_save(monkeypatch)
+    with pytest.raises(OSError):
+        good.save(path, keep=0)
+
+    assert path.exists(), "the interrupted save destroyed the existing checkpoint"
+    assert path.stat().st_size > 32, "the destination was left truncated"
+
+    reloaded = agent(path)
+    reloaded.load(path)
+    assert reloaded.epsilon == pytest.approx(0.5)
+
+
+def test_no_temp_file_is_left_to_be_mistaken_for_a_checkpoint(tmp_path, monkeypatch):
+    path = tmp_path / "dqn.pth"
+    a = agent(path)
+    a.epsilon = 0.9
+    a.save(path, keep=0)
+
+    interrupting_save(monkeypatch)
+    with pytest.raises(OSError):
+        a.save(path, keep=0)
+
+    assert list(tmp_path.glob("*.tmp")) == []
+    # The next save must still work, i.e. no stale temp file was in the way.
+    monkeypatch.undo()
+    a.epsilon = 0.3
+    a.save(path, keep=0)
+    assert agent(path) is not None
+
+
+def test_old_versions_are_kept_and_pruned(tmp_path):
+    """Keep the last 3, so a bad run can be rolled back or compared."""
+    path = tmp_path / "dqn_model_math.pth"
+    a = agent(path)
+
+    for i in range(6):
+        a.epsilon = i / 10
+        a.save(path, keep=3)
+
+    versions = sorted(p.name for p in tmp_path.glob("dqn_model_math.*.pth"))
+    assert len(versions) == 3, f"expected 3 kept versions, found {versions}"
+    assert path.exists(), "rotation must never remove the live checkpoint"
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_rotation_off_keeps_only_the_live_file(tmp_path):
+    path = tmp_path / "dqn.pth"
+    a = agent(path)
+    for i in range(3):
+        a.epsilon = i / 10
+        a.save(path, keep=0)
+    assert list(tmp_path.glob("*.pth")) == [path]
+
+
+def test_rotation_does_not_touch_unrelated_files(tmp_path):
+    """Only superseded copies of this checkpoint are pruning candidates."""
+    path = tmp_path / "dqn_model_math.pth"
+    sibling = tmp_path / "dqn_model_math_other.pth"
+    unrelated = tmp_path / "dqn_model_math.json"
+    sibling.write_bytes(b"keep me")
+    unrelated.write_text("{}")
+
+    a = agent(path)
+    for i in range(5):
+        a.epsilon = i / 10
+        a.save(path, keep=2)
+
+    assert sibling.exists(), "a similarly-named file was pruned"
+    assert unrelated.exists(), "an unrelated file was pruned"
+
+
+def test_save_load_round_trip_preserves_training_state(tmp_path):
+    path = tmp_path / "dqn.pth"
+    a = agent(path)
+    a.epsilon = 0.125
+    a.steps = 41
+    a.save(path, keep=0)
+
+    b = agent(path)
+    b.epsilon, b.steps = 1.0, 0
+    b.load(path)
+    assert b.epsilon == pytest.approx(0.125)
+    assert b.steps == 41
+    for (ka, va), (kb, vb) in zip(a.q_net.state_dict().items(), b.q_net.state_dict().items()):
+        assert ka == kb
+        assert torch.equal(va.cpu(), vb.cpu())
 
 
 # --------------------------------------------------------------------------
