@@ -213,6 +213,47 @@ here. A plain cargo build bakes `devUrl` into the binary, so the result loads
 `tauri.localhost` assertion is what catches that, which is the argument for
 asserting on the URL at all.
 
+### The console needs the checkout, not just the installer
+
+The MSI and NSIS bundles contain the app, not the benchmark. Everything the app
+actually runs lives in the checkout: `run_experiment.py`, `bench_bridge/`,
+`prompts/`, the model corpus under `data/`, and the `results/` CSVs. It also
+needs a Python interpreter with the dependencies in `requirements.txt` on the
+machine - there is no bundled interpreter, and a GPU run needs the right CUDA
+build of PyTorch.
+
+The console finds the checkout in this order, and every candidate has to look
+like one (`run_experiment.py` and `bench_bridge\__main__.py` inside it):
+
+1. **`BENCH_ROOT`**, if set. Authoritative - if it is wrong, startup fails with
+   an error naming it rather than quietly using somewhere else.
+2. Walking up from the executable, which covers an app kept inside the checkout
+   and works after the checkout has been moved since the build.
+3. The build-time path, which is exact for `npm run tauri dev`.
+
+If none match, startup fails with instructions rather than opening a window on
+an empty Results page. Set it explicitly for an installed build:
+
+```powershell
+$env:BENCH_ROOT='C:\path\to\Thesis-Rag'
+```
+
+`BENCH_PYTHON` overrides the interpreter the same way, and is honoured in every
+branch.
+
+Two consequences worth stating plainly. The old code used
+`env!("CARGO_MANIFEST_DIR")`, a compile-time constant, so an installed console
+worked only while the original build directory still existed on disk - it would
+otherwise start and invent an empty `data/bench` tree where it guessed. And a
+checkout recognised by those two files is a *necessary* condition, not a
+sufficient one: a Python without `torch` still fails at the first run.
+
+Only one instance may run at a time. The reconcile sweep on startup treats every
+`running` row as abandoned, which is true of the process that just exited and
+not of a concurrent instance - so a second copy would close a live run, and two
+copies would also put two writers and two Ollama sidecars on one database and one
+GPU. Launching the app again focuses the existing window instead.
+
 ## Runs left behind by a dead host
 
 Every settlement path - `fail_run`, `cancel_run`, the terminal event handlers -

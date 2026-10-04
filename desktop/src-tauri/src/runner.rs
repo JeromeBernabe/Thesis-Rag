@@ -82,23 +82,100 @@ pub struct PythonSetup {
 }
 
 impl PythonSetup {
-    /// Derive the layout from the crate manifest directory at compile time,
-    /// falling back to the current directory for tests.
+    /// Locate the repository root at runtime.
     ///
-    /// `CARGO_MANIFEST_DIR` is `<root>/desktop/src-tauri`, so the repository root
-    /// is two levels up - not one, or the sidecar would be launched from
-    /// `desktop/` and would not find `bench_bridge`.
-    pub fn detect() -> Self {
-        let project_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+    /// This used to be `env!("CARGO_MANIFEST_DIR")`, which is a *compile-time*
+    /// constant: the path of the machine that ran `cargo build` is baked into
+    /// the binary. Fine for `tauri dev`, and fine for an MSI/NSIS installer only
+    /// for as long as the original checkout still sits there untouched - the
+    /// console silently depends on `C:\Users\<whoever>\Documents\Thesis\...`
+    /// surviving a disk wipe. `BENCH_ROOT` makes the dependency explicit, and
+    /// the fallbacks cover an app kept inside the checkout.
+    ///
+    /// Returns an error rather than a guess: every page reads the database, and
+    /// pointing them at the wrong root produces an app that starts and then
+    /// invents an empty `data/bench` tree instead of reporting the mistake.
+    pub fn detect() -> Result<Self, String> {
+        let bench_root = std::env::var_os("BENCH_ROOT").map(PathBuf::from);
+        // `None` means "no exe to walk up from", e.g. under `cargo test`.
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(Path::to_path_buf));
+        Self::resolve(exe_dir, bench_root)
+    }
+
+    /// Resolution order, with each candidate required to look like a checkout.
+    ///
+    /// Split out from [`Self::detect`] and parameterised so it can be tested
+    /// without mutating the process environment, which is shared state under a
+    /// parallel test runner.
+    pub(crate) fn resolve(
+        exe_dir: Option<PathBuf>,
+        bench_root: Option<PathBuf>,
+    ) -> Result<Self, String> {
+        // 1. Explicit, and authoritative: a user who set this knows better than
+        //    any heuristic, so a bad value is an error rather than a cue to keep
+        //    searching. Reporting it is far more useful than silently falling
+        //    back to a different root than the one they asked for.
+        if let Some(root) = bench_root {
+            return Self::at(root, "BENCH_ROOT").map(|s| s.expect("BENCH_ROOT is valid"));
+        }
+
+        // 2. Walk up from the executable. This is the case that matters for a
+        //    packaged build placed inside the checkout, and it is the only one
+        //    that still works when the checkout has moved since the build.
+        if let Some(dir) = exe_dir {
+            for ancestor in dir.ancestors().skip(1).take(6) {
+                if let Some(setup) = Self::at(ancestor.to_path_buf(), "executable")? {
+                    return Ok(setup);
+                }
+            }
+        }
+
+        // 3. The compile-time root, which is exact for an in-tree dev build.
+        let build_root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .and_then(Path::parent)
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."));
-        let python = std::env::var_os("BENCH_PYTHON").map(PathBuf::from);
-        Self {
-            project_root,
-            python,
+        if let Some(setup) = Self::at(build_root.clone(), "build-time manifest")? {
+            return Ok(setup);
         }
+
+        Err(format!(
+            "cannot find the benchmark checkout, and no BENCH_ROOT is set.\n\n\
+             Set BENCH_ROOT to the directory containing run_experiment.py, for example:\n\n    \
+             set BENCH_ROOT=C:\\path\\to\\Thesis-Rag\n\n\
+             (PowerShell:  $env:BENCH_ROOT='C:\\path\\to\\Thesis-Rag')\n\n\
+             A checkout is recognised by run_experiment.py next to a bench_bridge directory.\n\
+             Searched upwards from the executable, and {}.",
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .and_then(Path::parent)
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "the build-time directory".into())
+        ))
+    }
+
+    /// `Ok(None)` when `root` is not a checkout; `Err` only for an explicit
+    /// request that turned out to be wrong.
+    fn at(root: PathBuf, source: &str) -> Result<Option<Self>, String> {
+        let looks_like_a_repo = root.join("run_experiment.py").is_file()
+            && root.join("bench_bridge").join("__main__.py").is_file();
+        if looks_like_a_repo {
+            return Ok(Some(Self {
+                project_root: root,
+                python: std::env::var_os("BENCH_PYTHON").map(PathBuf::from),
+            }));
+        }
+        if source == "BENCH_ROOT" {
+            return Err(format!(
+                "BENCH_ROOT is set to {}, which is not a benchmark checkout.\n\
+                 Expected run_experiment.py and bench_bridge\\__main__.py inside it.",
+                root.display()
+            ));
+        }
+        Ok(None)
     }
 
     fn interpreter(&self) -> PathBuf {

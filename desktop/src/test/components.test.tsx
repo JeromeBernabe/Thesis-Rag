@@ -1,4 +1,4 @@
-import { act, render, screen } from '@testing-library/react'
+﻿import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -11,7 +11,9 @@ import { RunPage } from '@/pages/RunPage'
 import { EventConsole } from '@/components/EventConsole'
 import { ProgressPanel } from '@/components/ProgressPanel'
 import { LivePromptTable } from '@/components/LivePromptTable'
+import { ResultsPage } from '@/pages/ResultsPage'
 import { PHASES } from '@/types/events'
+import type { RunRecord } from '@/types/models'
 
 function event(type: string, data: Record<string, unknown>, seq = 1): RunEvent {
   return { v: SCHEMA_VERSION, seq, ts_ms: 1000 + seq, run_id: 'run1', type, data }
@@ -326,5 +328,96 @@ describe('LivePromptTable', () => {
     for (const value of ['0.91', '0.72', '0.53', '0.34', '0.45', '0.56']) {
       expect(screen.getByText(value)).toBeInTheDocument()
     }
+  })
+})
+
+/** A stored run, minimal but shaped like `list_runs` returns one. */
+function storedRun(runId: string, dataset = 'hotpot'): RunRecord {
+  return {
+    run_id: runId,
+    created_at: 1,
+    started_at: 1,
+    finished_at: 2,
+    status: 'imported',
+    dataset,
+    systems: ['A', 'B'],
+    prompt_count: 50,
+    corpus_count: 5000,
+    seed: 42,
+    no_judge: false,
+    dry_run: false,
+    duration_s: 1,
+    error: null,
+  }
+}
+
+describe('ResultsPage', () => {
+  beforeEach(() => {
+    resetApiMock()
+    useRunStore.getState().reset()
+    useRunStore.getState().setAppInfo(APP_INFO)
+  })
+
+  it('imports the committed CSVs and refreshes the run list', async () => {
+    const user = userEvent.setup()
+    apiMock.listRuns.mockResolvedValue([])
+    apiMock.importLegacy.mockResolvedValue({
+      runs: ['imported-hotpot'],
+      promptRows: 50,
+      trainingRows: 120,
+      skipped: [],
+    })
+    render(<ResultsPage />)
+
+    await user.click(screen.getByRole('button', { name: /import thesis csvs/i }))
+
+    // The default path is the host's own `results/`, which is where the thesis
+    // CSVs are committed; passing a directory here would import the wrong thing.
+    expect(apiMock.importLegacy).toHaveBeenCalledWith()
+    expect(apiMock.listRuns).toHaveBeenCalledTimes(2)
+    expect(await screen.findByText(/imported 1 run/i)).toBeTruthy()
+  })
+
+  it('reports what an import skipped instead of silently succeeding', async () => {
+    const user = userEvent.setup()
+    apiMock.listRuns.mockResolvedValue([])
+    apiMock.importLegacy.mockResolvedValue({
+      runs: ['imported-hotpot'],
+      promptRows: 50,
+      trainingRows: 0,
+      skipped: ['ragas_results_math_logged.csv'],
+    })
+    render(<ResultsPage />)
+
+    await user.click(screen.getByRole('button', { name: /import thesis csvs/i }))
+
+    const notice = await screen.findByText(/skipped/i)
+    expect(notice.textContent).toContain('ragas_results_math_logged.csv')
+  })
+
+  it('surfaces an import failure instead of leaving the page as it was', async () => {
+    const user = userEvent.setup()
+    apiMock.listRuns.mockResolvedValue([])
+    apiMock.importLegacy.mockRejectedValue('no such directory: results')
+    render(<ResultsPage />)
+
+    await user.click(screen.getByRole('button', { name: /import thesis csvs/i }))
+
+    expect(await screen.findByText(/no such directory/i)).toBeTruthy()
+  })
+
+  it('lists a stored run so an imported benchmark is selectable', async () => {
+    apiMock.listRuns.mockResolvedValue([storedRun('imported-hotpot')])
+    apiMock.getRunDetail.mockResolvedValue({
+      run: storedRun('imported-hotpot'),
+      prompts: [],
+      stats: null,
+      training: [],
+      events: [],
+    })
+    render(<ResultsPage />)
+
+    const select = (await screen.findByLabelText('Run')) as HTMLSelectElement
+    expect([...select.options].map((o) => o.value)).toContain('imported-hotpot')
   })
 })

@@ -149,15 +149,6 @@ pub fn list_runs(state: State<'_, AppState>) -> Result<Vec<serde_json::Value>, S
     state.store.list_runs().map_err(|e| e.to_string())
 }
 
-/// One run's metadata.
-#[tauri::command]
-pub fn get_run(
-    state: State<'_, AppState>,
-    run_id: String,
-) -> Result<Option<serde_json::Value>, String> {
-    state.store.get_run(&run_id).map_err(|e| e.to_string())
-}
-
 /// Everything the Results page needs for one run, in a single round trip.
 ///
 /// One command rather than four: the page renders as soon as this resolves, and

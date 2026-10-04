@@ -15,9 +15,32 @@ use tauri::Manager;
 /// Build and run the Tauri application.
 pub fn run() {
     tauri::Builder::default()
+        // Registered first, and before anything else exists, because the second
+        // instance must be stopped *before* it reaches the reconcile sweep below.
+        //
+        // That sweep treats every `running` row as abandoned, which is only true
+        // of the process that just exited. A second instance launching while a
+        // benchmark is in flight would close that live run, and two instances
+        // would also put two writers and two Ollama sidecars on one database and
+        // one GPU. The plugin makes the second process focus the existing window
+        // and exit, which is also what a user double-clicking the icon expects.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            // Every window, rather than a hard-coded "main": the label is not
+            // set in tauri.conf.json, and focusing nothing would silently make
+            // the second launch look like it did nothing at all.
+            for (_label, window) in app.webview_windows() {
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let python = runner::PythonSetup::detect();
+            // Refusing to start beats starting wrong. Every page reads the run
+            // database, so an app that could not find the checkout would
+            // otherwise present an empty Results list and quietly create a
+            // `data/bench` tree wherever it guessed.
+            let python =
+                runner::PythonSetup::detect().map_err(|e| Box::<dyn std::error::Error>::from(e))?;
             let project_root = python.project_root.clone();
             let db_path = project_root.join("data").join("bench").join("runs.sqlite3");
 
@@ -71,7 +94,6 @@ pub fn run() {
             commands::cancel_run,
             commands::run_in_progress,
             commands::list_runs,
-            commands::get_run,
             commands::get_run_detail,
             commands::get_run_events,
             commands::get_stats,
@@ -88,19 +110,75 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::{Path, PathBuf};
+
+    /// The checkout this test binary was compiled inside.
+    fn build_root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .expect("repo root")
+            .to_path_buf()
+    }
 
     #[test]
     fn python_setup_points_at_the_repository_root() {
-        // The manifest dir is desktop/src-tauri, so the root is its parent.
-        let setup = runner::PythonSetup::detect();
+        let setup = runner::PythonSetup::detect().expect("checkout next to the crate");
         assert!(setup.project_root.join("bench_bridge").exists());
         assert!(setup.project_root.join("run_experiment.py").exists());
     }
 
     #[test]
     fn db_path_is_under_data_bench() {
-        let root = runner::PythonSetup::detect().project_root;
+        let root = runner::PythonSetup::detect()
+            .expect("checkout next to the crate")
+            .project_root;
         let db_path = root.join("data").join("bench").join("runs.sqlite3");
         assert!(db_path.starts_with(&root));
+    }
+
+    #[test]
+    fn bench_root_is_honoured_and_validated() {
+        let root = build_root();
+
+        let found =
+            runner::PythonSetup::resolve(Some(PathBuf::from("C:\\nowhere")), Some(root.clone()))
+                .expect("a real checkout is accepted");
+        assert_eq!(found.project_root, root);
+
+        // An explicit request that is wrong is an error naming the variable,
+        // not a quiet fallback to some other root - the user asked for this one.
+        let err = runner::PythonSetup::resolve(
+            None,
+            Some(PathBuf::from("C:\\definitely-not-a-checkout")),
+        )
+        .expect_err("bogus BENCH_ROOT rejected");
+        assert!(err.contains("BENCH_ROOT"), "unhelpful message: {err}");
+    }
+
+    #[test]
+    fn a_root_without_the_sidecar_is_not_a_checkout() {
+        let empty = std::env::temp_dir().join("bench-root-empty");
+        std::fs::create_dir_all(&empty).expect("temp dir");
+        let err = runner::PythonSetup::resolve(None, Some(empty.clone()))
+            .expect_err("an empty directory is not a checkout");
+        assert!(
+            err.contains("run_experiment.py"),
+            "unhelpful message: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&empty);
+    }
+
+    #[test]
+    fn an_executable_deep_inside_the_checkout_finds_it() {
+        let root = build_root();
+        let nested = root
+            .join("desktop")
+            .join("src-tauri")
+            .join("target")
+            .join("release");
+        let setup = runner::PythonSetup::resolve(Some(nested), None)
+            .expect("walking up from target/release reaches the root");
+        assert_eq!(setup.project_root, root);
     }
 }

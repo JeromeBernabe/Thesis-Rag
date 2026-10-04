@@ -87,15 +87,18 @@ if (await page.getByRole('alert').count()) {
 
 /* ---------------------------------------------------------- hash routing */
 
+// Results has to route, but the database may legitimately hold nothing yet -
+// this script is meant to work on a clean checkout. So this asserts the page
+// loaded its route, not that it found a run; the run created below is what
+// proves the data path. (Counting `option` elements would be worthless here:
+// the empty state renders a "no runs yet" placeholder, so the count is never 0.)
 await nav(page, 'Results').click()
 await page.getByRole('combobox', { name: 'Run' }).waitFor({ timeout: 30_000 })
 const options = await page.getByRole('combobox', { name: 'Run' }).locator('option').count()
-if (options === 0) fail('Results rendered but offered no runs, so a route failed to load its data')
-console.log(`  #/results routed and offered ${options} run(s)`)
-
-await nav(page, 'Simulation').click()
-await page.getByText('Pipeline').first().waitFor({ timeout: 30_000 })
-console.log('  #/simulation routed')
+const empty = await page.getByRole('combobox', { name: 'Run' }).locator('option[value=""]').count()
+console.log(
+  `  #/results routed (${options} option(s)${empty ? ', empty database' : ', with stored runs'})`,
+)
 
 await nav(page, 'Run').click()
 
@@ -134,9 +137,21 @@ if (run?.status !== 'completed') fail(`run did not complete, status=${run?.statu
 if (run.run_id === before.newest?.run_id) fail('no new run row appeared')
 console.log(`  run ${run.run_id} completed from the packaged binary`)
 
+// Simulation replays a prompt from a stored run, so it is checked here, while
+// this run still exists. Checking it earlier - as this script used to - required
+// a completed run to already be in the database, so the check silently depended
+// on leftover state and failed on a clean checkout.
+await nav(page, 'Simulation').click()
+await page.getByText('Pipeline').first().waitFor({ timeout: 30_000 })
+console.log('  #/simulation routed against a stored run')
+
 // Clean up after ourselves, the same way the dev-window pages flow does.
 await nav(page, 'Results').click()
 await page.getByRole('combobox', { name: 'Run' }).selectOption(run.run_id)
+// The run detail has to load before Delete can be pressed, so this doubles as
+// the assertion that Results reads real rows back out of the packaged build.
+await page.getByText(new RegExp(`${run.prompt_count} prompts|1 prompts`)).first().waitFor({ timeout: 30_000 })
+console.log('  #/results rendered the run detail from the packaged binary')
 await page.getByRole('button', { name: 'Delete run' }).click({ timeout: 30_000 })
 const deleteDeadline = Date.now() + 30_000
 while (Date.now() < deleteDeadline) {

@@ -45,6 +45,8 @@ export function ResultsPage() {
   const [detail, setDetail] = useState<RunDetail | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [importing, setImporting] = useState(false)
+  const [notice, setNotice] = useState<string | null>(null)
 
   // Refresh the picker when the page opens so a run that just finished is offered.
   useEffect(() => {
@@ -55,6 +57,35 @@ export function ResultsPage() {
         setRunId((current) => current || list[0]?.run_id || '')
       })
       .catch((e: unknown) => setError(describe(e)))
+  }, [])
+
+  // Importing the committed CSVs is the only way the historical experiments
+  // reach this page, and the only way to compare a new pipeline against them.
+  // It was reachable from the command layer and the API wrapper with nothing
+  // calling it, so the feature existed only in tests.
+  const importThesis = useCallback(() => {
+    setImporting(true)
+    setError(null)
+    setNotice(null)
+    void api
+      .importLegacy()
+      .then((report) => {
+        setImporting(false)
+        setNotice(
+          `imported ${report.runs.length} run(s), ${fmtInt(report.promptRows)} prompt ` +
+            `row(s) and ${fmtInt(report.trainingRows)} training row(s)` +
+            (report.skipped.length ? `; skipped ${report.skipped.join(', ')}` : ''),
+        )
+        return api.listRuns().then((list) => {
+          setRuns(list)
+          // Land on something new if this import added any.
+          if (report.runs.length > 0) setRunId(report.runs[0])
+        })
+      })
+      .catch((e: unknown) => {
+        setImporting(false)
+        setError(describe(e))
+      })
   }, [])
 
   const load = useCallback((id: string) => {
@@ -127,7 +158,15 @@ export function ResultsPage() {
             </>
           ) : null}
 
-          <div className="ml-auto">
+          <div className="ml-auto flex items-center gap-2">
+            <Button
+              size="sm"
+              onClick={importThesis}
+              disabled={importing}
+              title="Import the committed CSVs under results/ so the earlier experiments appear here"
+            >
+              {importing ? 'Importing…' : 'Import thesis CSVs'}
+            </Button>
             <Button
               size="sm"
               onClick={() => {
@@ -141,6 +180,8 @@ export function ResultsPage() {
           </div>
         </div>
       </Panel>
+
+      {notice ? <Panel className="text-ink-faint p-3 text-xs">{notice}</Panel> : null}
 
       {error ? (
         <Panel className="text-danger p-4 text-sm">{error}</Panel>

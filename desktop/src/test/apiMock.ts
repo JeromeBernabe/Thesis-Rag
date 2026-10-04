@@ -20,7 +20,6 @@ export const apiMock = {
   cancelRun: vi.fn<() => Promise<string>>(),
   runInProgress: vi.fn<() => Promise<boolean>>(),
   listRuns: vi.fn<() => Promise<RunRecord[]>>(),
-  getRun: vi.fn(),
   getRunDetail: vi.fn(),
   getRunEvents: vi.fn(),
   getStats: vi.fn(),
@@ -51,6 +50,12 @@ export const APP_INFO: AppInfo = {
 export function resetApiMock(): void {
   for (const fn of Object.values(apiMock)) {
     fn.mockReset()
+    // Actually reject, as the file's contract promises. `mockReset()` on its own
+    // leaves the mock returning `undefined`, so a component that a test forgot
+    // to configure crashed on `undefined.then` instead of showing the error it
+    // had a handler for - which reads as a bug in the component under test and
+    // sends you looking in the wrong file.
+    fn.mockRejectedValue(new Error('apiMock: not configured for this test'))
   }
   apiMock.getAppInfo.mockResolvedValue(APP_INFO)
   apiMock.listRuns.mockResolvedValue([])
