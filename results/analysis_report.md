@@ -1,6 +1,6 @@
 # DQN-Enhanced RAG: Full Experimental Analysis Report (4 Datasets)
 
-**Date:** September 21, 2026
+**Date:** September 21, 2026 (numbers regenerated and verified October 4, 2026)
 **Author:** Johann (Thesis)
 **Models:** llama3.2 (generation), nomic-embed-text (embeddings), qwen3:8b (RAGAS judge)
 **GPU:** NVIDIA RTX 4050 Laptop, CUDA 12.4
@@ -10,16 +10,26 @@
 
 ## 1. Executive Summary
 
-This report evaluates a DQN-enhanced RAG system (System B, dynamic k∈{1..5}) against a baseline RAG system (System A, fixed k=3) across **4 datasets** (Hotpot, RagTruth, Fintech, Math) using custom RAGAS scoring with full token usage and latency instrumentation.
+This report evaluates a DQN-enhanced RAG system (System B, dynamic k∈{1..5}) against a baseline RAG system (System A, fixed k=3) across **4 datasets** (Hotpot, RagTruth, Fintech, Math) using custom RAGAS scoring with latency instrumentation.
 
 **Key findings across all 4 datasets:**
 
 1. **DQN learns dataset-specific k-selection:** Hotpot→k=1, RagTruth→k=4, Fintech→k=3, Math→k=3
 2. **No statistically significant faithfulness improvement** on any dataset at α=0.05
-3. **Hotpot shows strongest positive trend:** +8.3% faithfulness (p=0.251, one-tailed), +64% token savings, +3× token efficiency
+3. **Hotpot shows the strongest positive trend:** +8.8% faithfulness (p=0.234, one-tailed). Its large advantage is in *request* tokens (−64.4%), not generation tokens (−0.5%) or efficiency (1.09×, within noise)
 4. **Math shows degradation:** −8.9% faithfulness (p=0.90, one-tailed), suggesting DQN hurts on math reasoning
 5. **Judge scoring (qwen3:8b) dominates cost:** 90-97% of wall-clock time across all datasets
-6. **Context recall is unreliable** — high judge failure rate, especially on Fintech (−70.9% likely due to judge failures)
+6. **Both statistically significant results are regressions, not gains:** RagTruth answer relevancy (two-tailed p=0.033) and fintech context recall (p=0.022)
+7. **Context recall needs validation before use:** near-zero for fintech under both systems (0.110 / 0.032). See §12
+
+> **Corrections applied 2026-10-04.** Every number below was regenerated from the
+> result CSVs by `src/full_stats.py` and is checked by
+> `bench_bridge/tests/test_report_provenance.py`. Four things changed materially:
+> hotpot's faithfulness gain was **+8.3% → +8.8%** on **50** prompts rather than 49;
+> the claimed **"3× token efficiency gain" was wrong** (the token columns held the
+> judge's counts) and is really 1.09×; RagTruth answer relevancy's **p=0.016 was a
+> wrong-direction p-value**; and the fintech context-recall drop was **not** a judge
+> artefact. Sections 3.3, 3.4 and 4 carry the details.
 
 ---
 
@@ -68,73 +78,134 @@ Where F = faithfulness, AR = answer relevancy, CR = context_recall, λ = 0.0 (no
 
 ### 3.2 Faithfulness (System B vs System A)
 
-| Dataset | System A | System B | Δ | Cohen's d | p (one-tailed) | Wilcoxon p | Significant? |
-|---------|----------|----------|---|-----------|----------------|------------|--------------|
-| Hotpot | 0.596 | 0.646 | **+8.3%** | 0.115 | 0.251 | 0.225 | No (trending) |
-| RagTruth | 0.842 | 0.839 | −0.3% | −0.010 | 0.521 | 0.377 | No |
-| Fintech | 0.815 | 0.869 | **+6.6%** | 0.203 | 0.092 | 0.117 | No (trending) |
-| Math | 0.524 | 0.477 | **−8.9%** | −0.143 | 0.901 | 0.937 | No |
+| Dataset | n | System A | System B | Δ | Cohen's d | p (one-tailed) | Wilcoxon p | Significant? |
+|---------|---|----------|----------|---|-----------|----------------|------------|--------------|
+| Hotpot | 50 | 0.598 | 0.651 | **+8.8%** | 0.103 | 0.234 | 0.214 | No (trending) |
+| RagTruth | 50 | 0.842 | 0.839 | −0.3% | −0.007 | 0.521 | 0.377 | No |
+| Fintech | 50 | 0.815 | 0.869 | **+6.6%** | 0.191 | 0.092 | 0.117 | No (trending) |
+| Math | 49 | 0.524 | 0.477 | **−8.9%** | −0.186 | 0.901 | 0.937 | No |
+
+`n` is the number of prompts scored under **both** systems, so it is per metric and
+can be lower than the 50 prompts in the run. Math is 49 because one prompt
+(`Math-Test-1016`) received no faithfulness score from the judge under system B.
+See §11.
 
 **Interpretation:**
-- **Hotpot:** Strongest positive trend (+8.3%, p=0.251). k=1 reduces noise, improving faithfulness for multi-hop questions
+- **Hotpot:** Strongest positive trend (+8.8%, p=0.234). k=1 reduces noise, improving faithfulness for multi-hop questions
 - **Fintech:** Positive trend (+6.6%, p=0.092). k=3/5 mixture shows slight improvement
 - **RagTruth:** No change. k=4 provides same quality as k=3 baseline
 - **Math:** Degradation (−8.9%, p=0.901). k=3/4 doesn't help math reasoning; more context may introduce noise
 
 ### 3.3 Answer Relevancy
 
-| Dataset | System A | System B | Δ | p (one-tailed) | Significant? |
-|---------|----------|----------|---|----------------|--------------|
-| Hotpot | 0.734 | 0.764 | +4.1% | 0.197 | No |
-| RagTruth | 0.745 | 0.719 | **−3.5%** | **0.016** | **Yes (B worse)** |
-| Fintech | 0.772 | 0.764 | −1.1% | 0.660 | No |
-| Math | 0.792 | 0.814 | +2.8% | 0.101 | No |
+| Dataset | n | System A | System B | Δ | p (one-tailed, B>A) | p (two-tailed) | Significant? |
+|---------|---|----------|----------|---|----------------------|----------------|--------------|
+| Hotpot | 50 | 0.730 | 0.764 | +4.6% | 0.168 | 0.337 | No |
+| RagTruth | 50 | 0.745 | 0.719 | **−3.5%** | 0.984 | **0.033** | **Yes (B worse, two-tailed)** |
+| Fintech | 50 | 0.772 | 0.764 | −1.1% | 0.660 | 0.681 | No |
+| Math | 50 | 0.787 | 0.815 | +3.5% | 0.063 | 0.126 | No |
 
-**Critical finding:** RagTruth shows **statistically significant degradation** in answer relevancy (p=0.016). k=4 introduces noise that degrades answer focus.
+**Critical finding:** RagTruth answer relevancy is significantly **lower** under
+system B. The two-tailed p-value is 0.033; the one-tailed p for the directional
+hypothesis B>A is 0.984, because B is on the wrong side of it.
+
+> **Correction (this figure was previously reported as p=0.016, "significant").**
+> 0.016 is half the two-tailed p-value, taken on the *degradation* side. It was
+> presented as the one-tailed p for B>A, which is the opposite direction — the
+> test the rest of this report states. The degradation itself is real and does
+> survive a two-tailed test; what was wrong was the direction the p-value was
+> quoted for, which made a regression read as the primary result.
 
 ### 3.4 Context Recall
 
-| Dataset | System A | System B | Δ | p (two-tailed) |
-|---------|----------|----------|---|----------------|
-| Hotpot | 0.281 | 0.233 | −17.0% | 0.933 |
-| RagTruth | 0.878 | 0.893 | +1.6% | 0.253 |
-| Fintech | 0.110 | 0.032 | **−70.9%** | 0.022 |
-| Math | 0.267 | 0.287 | +7.5% | 0.467 |
+| Dataset | n | System A | System B | Δ | p (two-tailed) | p (one-tailed, B>A) |
+|---------|---|----------|----------|---|----------------|----------------------|
+| Hotpot | 49 | 0.281 | 0.233 | −17.0% | 0.134 | 0.933 |
+| RagTruth | 50 | 0.878 | 0.893 | +1.6% | 0.506 | 0.253 |
+| Fintech | 50 | 0.110 | 0.032 | **−70.9%** | **0.022** | 0.989 |
+| Math | 50 | 0.262 | 0.282 | +7.5% | 0.467 | 0.234 |
 
-**Note:** Fintech's −70.9% context recall is likely due to judge evaluation failures (qwen3:8b returning NaN for faithfulness), not actual retrieval degradation. Context recall is the most unreliable metric across all datasets.
+> **Correction.** This section previously attributed fintech's −70.9% to judge
+> failures ("qwen3:8b returning NaN for faithfulness"). That explanation does not
+> hold: the fintech run has **no** NULL scores in any metric, so all 50 prompts
+> are paired and the drop is a real measured difference, not an artefact of
+> missing rows. The NaN failures occurred in the *hotpot* run, and hotpot's
+> context recall is the one that lost a prompt (n=49, §11).
+
+Context recall remains the least trustworthy metric here — it is near zero for
+fintech under both systems (0.110 and 0.032), which is low enough to warrant
+checking the metric's behaviour before relying on the fintech gap. See §12.
 
 ---
 
 ## 4. Token Usage Analysis
 
-### 4.1 Generation Tokens (llama3.2)
+> **This whole section was mislabelled and has been corrected.**
+>
+> Two separate defects were behind it:
+>
+> 1. The runners logged `scores["judge_prompt_tokens"]` into the `prompt_tokens`
+>    column and `scores["judge_completion_tokens"]` into `completion_tokens`.
+>    The generator's own counts, which Ollama had already returned, were
+>    discarded. In the result CSVs `prompt_tokens` is therefore identical to
+>    `judge_prompt_tokens` in **every row**, and likewise for the completion
+>    columns — which is how the judge's cost ended up presented as the
+>    generator's. This is fixed in `run_experiment.py` and
+>    `run_experiment_logged.py`; the CSVs below predate the fix.
+> 2. The old table labelled `total_tokens` as "generation tokens". Those are
+>    different quantities — total is prompt + completion, generation is
+>    completion alone.
+>
+> Consequently **judge token usage cannot be reported at all** from these CSVs,
+> because the only judge-token columns in them are copies of the generator's.
+> The judge figures in §4.2 previously quoted here were the generator's numbers
+> relabelled. `src/full_stats.py` now refuses to emit them and records the
+> reason in `data_warnings`.
+
+### 4.1 Generation Tokens (llama3.2) — completion tokens only
 
 | Dataset | System A | System B | Δ | Interpretation |
 |---------|----------|----------|---|----------------|
-| Hotpot | 4,034 | 1,444 | **−64.2%** | k=1 → shorter prompts → shorter answers |
-| RagTruth | 2,103 | 2,670 | +27.0% | k=4 → longer prompts → longer answers |
-| Fintech | 2,560 | 2,922 | +14.2% | k=3/5 → slightly more context |
-| Math | 692 | 697 | +0.6% | k=3/4 → minimal change |
+| Hotpot | 587.3 | 584.1 | −0.5% | answer length essentially unchanged |
+| RagTruth | 720.8 | 733.2 | +1.7% | answer length essentially unchanged |
+| Fintech | 426.7 | 426.5 | −0.04% | no change |
+| Math | 746.6 | 742.8 | −0.5% | no change |
 
-### 4.2 Judge Tokens (qwen3:8b)
+**Finding:** choosing k changes the *prompt* a great deal and the *answer* almost
+not at all — every dataset is within 2%. The context budget is spent upstream in
+retrieval, not on longer generations.
+
+### 4.2 Total Request Tokens (prompt + completion)
 
 | Dataset | System A | System B | Δ |
 |---------|----------|----------|---|
-| Hotpot | 5,209 | 3,923 | −24.7% |
-| RagTruth | 4,896 | 5,395 | +10.2% |
-| Fintech | 4,635 | 4,681 | +1.0% |
-| Math | 2,731 | 2,733 | +0.1% |
+| Hotpot | 4,028 | 1,435 | **−64.4%** |
+| RagTruth | 2,103 | 2,670 | +27.0% |
+| Fintech | 2,560 | 2,922 | +14.1% |
+| Math | 692 | 699 | +1.1% |
+
+**Unavailable — judge tokens (qwen3:8b).** The judge-token columns duplicate the
+generator's in every row, so no judge token figure can be derived from these
+files. Judge *wall-clock* is real and is reported in §5.
 
 ### 4.3 Token Efficiency (Faithfulness per 1k Generation Tokens)
 
 | Dataset | System A | System B | Ratio |
 |---------|----------|----------|-------|
-| Hotpot | 0.148 | 0.447 | **3.0× more efficient** |
-| RagTruth | 0.400 | 0.314 | 0.79× (less efficient) |
-| Fintech | 0.318 | 0.297 | 0.93× (slightly less) |
-| Math | 0.757 | 0.685 | 0.91× (less efficient) |
+| Hotpot | 1.019 | 1.115 | **1.09× more efficient** |
+| RagTruth | 1.168 | 1.145 | 0.98× (less efficient) |
+| Fintech | 1.909 | 2.037 | 1.07× (more efficient) |
+| Math | 0.702 | 0.643 | 0.92× (less efficient) |
 
-**Key finding:** Only Hotpot achieves meaningful token efficiency gains (3×). All other datasets show neutral or worse efficiency.
+> **Correction.** This table previously read 0.148 → 0.447 for hotpot, a "3×
+> efficiency gain", and the report called it the key token finding. Both numbers
+> were wrong: they divided faithfulness by the old mislabelled token column. The
+> real effect is 1.09×, well within noise at n=50. There is no meaningful token
+> efficiency gain on any dataset.
+
+**Key finding:** Token efficiency is effectively flat across all four datasets.
+The honest version of this result is that generation length is nearly constant
+regardless of k, so efficiency tracks faithfulness almost exactly.
 
 ---
 
@@ -156,10 +227,10 @@ Where F = faithfulness, AR = answer relevancy, CR = context_recall, λ = 0.0 (no
 | Fintech | Generation | 2.370 | 3.330 | +40.5% |
 | Fintech | Judge scoring | 51.04 | 50.44 | −1.2% |
 | Fintech | **Total** | **53.60** | **53.97** | **+0.7%** |
-| Math | Retrieval | 0.263 | 0.010 | −96.2% |
-| Math | Generation | 4.520 | 4.140 | −8.4% |
-| Math | Judge scoring | 72.47 | 70.95 | −2.1% |
-| Math | **Total** | **77.52** | **75.11** | **−3.1%** |
+| Math | Retrieval | 0.556 | 0.013 | −97.7% |
+| Math | Generation | 4.513 | 4.166 | −7.7% |
+| Math | Judge scoring | 72.39 | 70.61 | −2.5% |
+| Math | **Total** | **77.46** | **74.79** | **−3.4%** |
 
 ### 5.2 Latency Findings
 
@@ -174,31 +245,39 @@ Where F = faithfulness, AR = answer relevancy, CR = context_recall, λ = 0.0 (no
 
 ## 6. Statistical Significance Summary (All Tests)
 
-| Metric | Dataset | Test | p-value | Effect Size | Significant? |
-|--------|---------|------|---------|-------------|--------------|
-| Faithfulness | Hotpot | One-tailed t | 0.251 | d=0.115 | No |
-| Faithfulness | Hotpot | Wilcoxon | 0.225 | — | No |
-| Faithfulness | RagTruth | One-tailed t | 0.521 | d=−0.010 | No |
-| Faithfulness | RagTruth | Wilcoxon | 0.377 | — | No |
-| Faithfulness | Fintech | One-tailed t | 0.092 | d=0.203 | No (trending) |
-| Faithfulness | Fintech | Wilcoxon | 0.117 | — | No |
-| Faithfulness | Math | One-tailed t | 0.901 | d=−0.143 | No |
-| Faithfulness | Math | Wilcoxon | 0.937 | — | No |
-| Answer Rel | Hotpot | One-tailed t | 0.197 | — | No |
-| Answer Rel | RagTruth | One-tailed t | **0.016** | — | **Yes (B worse)** |
-| Answer Rel | Fintech | One-tailed t | 0.660 | — | No |
-| Answer Rel | Math | One-tailed t | 0.101 | — | No |
-| Context Rec | Hotpot | Two-tailed t | 0.933 | — | No |
-| Context Rec | RagTruth | Two-tailed t | 0.253 | — | No |
-| Context Rec | Fintech | Two-tailed t | **0.022** | — | **Yes (B worse)** |
-| Context Rec | Math | Two-tailed t | 0.467 | — | No |
+| Metric | Dataset | n | Test | p-value | Effect Size | Significant? |
+|--------|---------|---|------|---------|-------------|--------------|
+| Faithfulness | Hotpot | 50 | One-tailed t (B>A) | 0.234 | d=0.103 | No |
+| Faithfulness | Hotpot | 50 | Wilcoxon (B>A) | 0.214 | — | No |
+| Faithfulness | RagTruth | 50 | One-tailed t (B>A) | 0.521 | d=−0.007 | No |
+| Faithfulness | RagTruth | 50 | Wilcoxon (B>A) | 0.377 | — | No |
+| Faithfulness | Fintech | 50 | One-tailed t (B>A) | 0.092 | d=0.191 | No (trending) |
+| Faithfulness | Fintech | 50 | Wilcoxon (B>A) | 0.117 | — | No |
+| Faithfulness | Math | 49 | One-tailed t (B>A) | 0.901 | d=−0.186 | No |
+| Faithfulness | Math | 49 | Wilcoxon (B>A) | 0.937 | — | No |
+| Answer Rel | Hotpot | 50 | One-tailed t (B>A) | 0.168 | — | No |
+| Answer Rel | RagTruth | 50 | **Two-tailed t** | **0.033** | — | **Yes (B worse)** |
+| Answer Rel | Fintech | 50 | One-tailed t (B>A) | 0.660 | — | No |
+| Answer Rel | Math | 50 | One-tailed t (B>A) | 0.063 | — | No |
+| Context Rec | Hotpot | 49 | Two-tailed t | 0.134 | — | No |
+| Context Rec | RagTruth | 50 | Two-tailed t | 0.506 | — | No |
+| Context Rec | Fintech | 50 | **Two-tailed t** | **0.022** | — | **Yes (B worse)** |
+| Context Rec | Math | 50 | Two-tailed t | 0.467 | — | No |
+
+Every p-value above is reproducible from `results/ragas_results_<dataset>_logged.csv`
+via `src/full_stats.py`; `bench_bridge/tests/test_report_provenance.py` fails if
+`results/full_stats.json` and the CSVs disagree.
 
 ### Interpretation
 - **No faithfulness improvement reaches significance** on any dataset
 - **Fintech is closest** (p=0.092, one-tailed) — may reach significance with n=100
-- **RagTruth answer relevancy degrades significantly** (p=0.016)
-- **Fintech context recall degrades significantly** (p=0.022) — likely judge artifact
+- **RagTruth answer relevancy is significantly lower under B** (two-tailed p=0.033);
+  the one-tailed B>A p is 0.984. k=4 appears to dilute answer focus.
+- **Fintech context recall is significantly lower under B** (two-tailed p=0.022).
+  This one is *not* a judge artefact — the run has no missing scores (§3.4).
 - **Math shows degradation** (p=0.901, trending negative) — DQN hurts math reasoning
+- **Both significant results are regressions, not improvements.** No metric shows a
+  statistically significant *gain* for system B.
 
 ---
 
@@ -242,7 +321,7 @@ Where F = faithfulness, AR = answer relevancy, CR = context_recall, λ = 0.0 (no
 2. **RagTruth needs k=4:** Fact verification requires multiple supporting/contradicting evidence pieces
 3. **Fintech is baseline-like:** Domain queries are well-served by k=3; DQN learns to stay near baseline
 4. **Math degrades with more context:** Math problems benefit from focused reasoning, not additional documents
-5. **Context recall is unreliable:** Judge failures (qwen3:8b) make CR scores noisy, especially on Fintech
+5. **Context recall is questionable on Fintech:** both systems score near zero (0.110 / 0.032) with no missing values. This is a property of the metric on this data, not of judge failures — see §3.4 and §12
 
 ### 8.3 Pattern: DQN Works When...
 
@@ -257,12 +336,13 @@ Where F = faithfulness, AR = answer relevancy, CR = context_recall, λ = 0.0 (no
 
 ### 9.1 Primary Findings
 
-1. **DQN learns meaningful k-selection strategies** — different datasets get different k values
+1. **DQN learns meaningful k-selection strategies** — different datasets get different k values, though on three of four the policy is nearly constant (§12)
 2. **No consistent faithfulness improvement** — only Hotpot and Fintech show positive trends, neither significant
-3. **Significant answer relevancy degradation on RagTruth** — p=0.016, System B is worse
+3. **Significant answer relevancy degradation on RagTruth** — two-tailed p=0.033, System B is worse. This was previously reported as p=0.016, which was the one-tailed value on the wrong side of the hypothesis
 4. **Math shows degradation** — DQN hurts on self-contained reasoning tasks
-5. **Token efficiency only improves on Hotpot** — 3× better faithfulness per token
+5. **Token efficiency is flat** — at most 1.09× on Hotpot, within noise. The earlier "3× gain" came from token columns that held the judge's counts (§4)
 6. **Judge scoring dominates cost** — 90-97% of latency is qwen3:8b evaluation
+7. **Neither significant result is an improvement.** Both regressions.
 
 ### 9.2 Thesis Implications
 
@@ -301,6 +381,79 @@ Where F = faithfulness, AR = answer relevancy, CR = context_recall, λ = 0.0 (no
 
 ---
 
+## 11. Data Provenance and Completeness
+
+### 11.1 Source of every published number
+
+All statistics in §3, §4, §5 and §6 are generated by `src/full_stats.py` from the
+four `ragas_results_<dataset>_logged.csv` files and written to
+`results/full_stats.json`. Each dataset block records the CSV it came from and
+that file's SHA-256, so a stale figure cannot masquerade as a current one.
+
+Regenerate with:
+
+```
+python -c "from src.full_stats import write; write()"
+```
+
+`bench_bridge/tests/test_report_provenance.py` recomputes every value and fails
+if the JSON and the CSVs disagree, if a recorded source hash no longer matches
+its CSV, or if a number is hand-entered. This is what caught the stale hotpot
+figures and the unreproducible token columns; it is what will catch the next one.
+
+### 11.2 Prompts excluded from paired tests
+
+A prompt contributes to a paired test only if **both** systems produced a score.
+Where the judge returned NULL the pair is dropped — not imputed — so the metric's
+sample size is below the 50 prompts in the run.
+
+| Dataset | Metric | Prompts | Paired n | Prompt ID | Missing |
+|---------|--------|---------|----------|-----------|---------|
+| Hotpot | context_recall | 50 | 49 | `5ae2057b554299234fd043a5` | A and B |
+| Math | faithfulness | 50 | 49 | `Math-Test-1016` | B |
+| RagTruth | all | 50 | 50 | — | — |
+| Fintech | all | 50 | 50 | — | — |
+
+Every other metric/dataset pair uses all 50 prompts. Both gaps are single
+prompts and neither changes any conclusion, but they were previously invisible:
+`n` used to be one number per dataset, so hotpot's headline "n=49" was really the
+context-recall pair count quoted next to a 50-prompt run.
+
+### 11.3 Known instrumentation defects in these CSVs
+
+| Defect | Effect | Status |
+|--------|--------|--------|
+| `prompt_tokens`/`completion_tokens` hold the judge's counts | generator token usage lost; judge tokens unrecoverable | **Code fixed**; these CSVs predate the fix and need a re-run to repair |
+| `total_tokens` ≠ prompt + completion | `total_tokens` measures something else; not summable | flagged in `data_warnings` |
+| Groundedness (`ga`/`gb`) in the old `full_stats.json` | no source column anywhere in the repo | **removed**; not reported |
+
+---
+
+## 12. Threats to Validity
+
+**Judge token usage is missing.** Because of the defect in §11.3, the token cost
+of qwen3:8b cannot be separated from the generator's in these runs. Judge
+wall-clock (~50–81 s/query) is genuine and dominates the cost, so the *conclusion*
+that judging dominates stands; the *token* accounting does not exist for these runs.
+
+**Context recall behaves anomalously on fintech.** Both systems score near zero
+(0.110 and 0.032) with no missing values and no warnings. A metric that returns
+almost nothing across 50 prompts regardless of the system under test is more
+likely to be mis-specified for this data than to be reporting a −70.9% effect.
+This should be validated with a labelled subset before the fintech context-recall
+result is cited as a finding.
+
+**Sample size.** 50 prompts per dataset is small for paired tests on differences
+of this size. Fintech faithfulness (p=0.092) would need roughly n=100 to reach
+α=0.05; no dataset currently shows a significant *improvement*.
+
+**k-selection is concentrated.** Hotpot selects k=1 in 49 of 50 prompts, so
+"system B" on hotpot is very nearly "system A with k=1". Conclusions about the
+DQN as a *policy* rest on RagTruth (k=4 in 46/50) being the informative case;
+on the other three datasets the policy is close to a constant.
+
+---
+
 ## Appendix A: Raw Data Files
 
 | File | Description |
@@ -313,7 +466,7 @@ Where F = faithfulness, AR = answer relevancy, CR = context_recall, λ = 0.0 (no
 | `results/training_log_ragtruth.csv` | RagTruth per-step training (50 rows) |
 | `results/training_log_fintech.csv` | Fintech per-step training (50 rows) |
 | `results/training_log_math.csv` | Math per-step training (50 rows) |
-| `results/full_stats.json` | Complete statistical results |
+| `results/full_stats.json` | Generated statistics, with per-dataset source CSV + SHA-256 |
 | `plots/` | 27+ visualization PNGs |
 
 ## Appendix B: Configuration

@@ -40,11 +40,18 @@ def descriptive_stats(df: pd.DataFrame, metrics: list[str] | None = None) -> pd.
 
 def _paired_test(df: pd.DataFrame, metric: str, alpha: float = ALPHA) -> dict:
     """Run paired t-test (two-tailed + one-tailed) and Wilcoxon signed-rank test."""
-    pivot = df.pivot(index="prompt_id", columns="system_id", values=metric).dropna()
+    pivot = df.pivot(index="prompt_id", columns="system_id", values=metric)
     if "A" not in pivot.columns or "B" not in pivot.columns:
         raise ValueError("Results must contain both system A and system B rows.")
-    a = pivot["A"]
-    b = pivot["B"]
+    # `.dropna()` is what makes the pairing correct, but it is also what makes
+    # rows disappear without a trace: a NULL from one system silently shrinks
+    # `n`, and the report then quotes an `n` the reader cannot reconcile with
+    # the prompt count. Which prompts were dropped, and which system was
+    # missing, is recorded so it can be stated in the output instead.
+    unpaired = pivot[pivot.isna().any(axis=1)]
+    paired = pivot.dropna()
+    a = paired["A"]
+    b = paired["B"]
     diffs = b - a
     n = len(a)
     mean_a = float(a.mean())
@@ -111,6 +118,13 @@ def _paired_test(df: pd.DataFrame, metric: str, alpha: float = ALPHA) -> dict:
     return {
         "metric": metric,
         "n_pairs": int(n),
+        "n_prompts": int(pivot.shape[0]),
+        "n_dropped": int(unpaired.shape[0]),
+        "dropped_prompt_ids": sorted(unpaired.index.tolist()),
+        "dropped_missing": {
+            str(idx): [c for c in ("A", "B") if pd.isna(row[c])]
+            for idx, row in unpaired.iterrows()
+        },
         "mean_a": mean_a,
         "mean_b": mean_b,
         "mean_difference": mean_diff,
@@ -171,6 +185,28 @@ def report(df: pd.DataFrame, out_path=None) -> str:
     lines.append("Note: p_one_tailed tests H1: B > A (directional hypothesis).")
     lines.append("      wilcoxon_* are non-parametric Wilcoxon signed-rank tests.")
     lines.append("      CI 95% is for the mean difference (B - A).")
+
+    # The paired `n` is per metric and is smaller than the prompt count wherever
+    # a judge returned NULL, so state the gap rather than leaving the reader to
+    # reconcile `n_pairs` against the 50 prompts in the CSV.
+    dropped = ttable[ttable["n_dropped"] > 0]
+    lines.append("")
+    if dropped.empty:
+        lines.append("Data completeness: every prompt scored under both systems for all metrics.")
+    else:
+        lines.append("DATA COMPLETENESS - prompts excluded from a paired test because a judge")
+        lines.append("returned no score. `n_pairs` below is smaller than the prompt count for these:")
+        for _, row in dropped.iterrows():
+            missing = row["dropped_missing"]
+            detail = "; ".join(
+                f"{pid} (missing {', '.join(systems)})" for pid, systems in missing.items()
+            )
+            lines.append(
+                f"  - {row['metric']}: {row['n_dropped']} of {row['n_prompts']} prompts dropped"
+                f" -> n_pairs={row['n_pairs']} | {detail}"
+            )
+        lines.append("These are excluded pairwise, not imputed. Treat the affected")
+        lines.append("metric's n_pairs as its sample size.")
     text = "\n".join(lines)
     print(text)
     if out_path:
