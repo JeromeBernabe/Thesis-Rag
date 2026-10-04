@@ -80,6 +80,66 @@ impl Store {
         self.finish_run_without_event(run_id, "failed", Some(message))
     }
 
+    /// Close out runs left `running` by a host that is no longer alive.
+    ///
+    /// Settlement everywhere else - `fail_run`, `cancel_run`, the event-driven
+    /// terminal handlers - runs *inside* the host, so it only ever sees outcomes
+    /// it was still around to observe. A host that is killed outright (`taskkill
+    /// /F`, a crash, a power cut) never reaches any of them, and the row stays
+    /// `running` forever. That is not cosmetic: the Run page refuses to start
+    /// while anything looks in progress, so one phantom run wedges the app
+    /// permanently, and `run_in_progress` reports a run nobody is running.
+    ///
+    /// Hence this sweep at startup. By the time it runs, the host that owned any
+    /// `running` row is gone - the row is not describing a process this
+    /// application can still see - so every one of them is stale by definition.
+    ///
+    /// That argument depends on there being only one host against a database, the
+    /// same assumption the single `ActiveRunSlot` and the single-writer SQLite
+    /// connection already make. A second instance starting alongside a live one
+    /// would fail this reasoning, so a genuine deployment needs
+    /// `tauri-plugin-single-instance` in front of `setup`.
+    ///
+    /// Returns the ids it closed, so the caller can log them.
+    pub fn reconcile_interrupted_runs(&self) -> rusqlite::Result<Vec<String>> {
+        let conn = self.lock();
+        let stale: Vec<String> = {
+            let mut stmt = conn.prepare("SELECT run_id FROM runs WHERE status = 'running'")?;
+            let ids = stmt
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            ids
+        };
+        if stale.is_empty() {
+            return Ok(stale);
+        }
+        // `failed` rather than `cancelled`: nothing asked for this to stop, and
+        // the error column is where a user looks to find out what happened. The
+        // finished time is when the sweep noticed, which is the best available
+        // answer - the real end is unknowable once the host is gone.
+        let finished_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        for run_id in &stale {
+            // The `status = 'running'` predicate duplicates the SELECT above, and
+            // deliberately so. There is one writer, so it cannot change the
+            // outcome here; it is there for the case the sweep does not yet
+            // exclude, where a second host is running against the same database
+            // and legitimately owns the row. See the note about
+            // `tauri-plugin-single-instance` on this function.
+            conn.execute(
+                "UPDATE runs
+                    SET status = 'failed',
+                        error = 'the application exited while this run was in flight',
+                        finished_at = ?2
+                  WHERE run_id = ?1 AND status = 'running'",
+                params![run_id, finished_at],
+            )?;
+        }
+        Ok(stale)
+    }
+
     /// Mark a run cancelled.
     ///
     /// Cancelling kills the sidecar, so it never gets to emit `run_finished` and
@@ -919,6 +979,78 @@ mod tests {
         let store = store();
         store.fail_run("nope", "gone").unwrap();
         assert!(store.get_run("nope").unwrap().is_none());
+    }
+
+    #[test]
+    fn reconciliation_closes_runs_orphaned_by_a_dead_host() {
+        // A host killed outright runs none of its own settlement paths, so the row
+        // is still `running` next time anyone opens the database.
+        let store = store();
+        store.create_run("run1", 1, "hotpot").unwrap();
+        store.create_run("run2", 2, "hotpot").unwrap();
+
+        let closed = store.reconcile_interrupted_runs().unwrap();
+        assert_eq!(closed, vec!["run1".to_string(), "run2".to_string()]);
+
+        for id in ["run1", "run2"] {
+            let run = store.get_run(id).unwrap().unwrap();
+            assert_eq!(run["status"], "failed");
+            assert!(
+                run["error"].as_str().unwrap().contains("exited"),
+                "the reason has to be visible: {:?}",
+                run["error"]
+            );
+            assert!(run["finished_at"].as_i64().is_some());
+        }
+    }
+
+    #[test]
+    fn reconciliation_leaves_finished_runs_alone() {
+        // The sweep must not restamp a run that already reached a real outcome -
+        // a completed 20k-prompt run took hours, and rewriting it would destroy
+        // the only honest record of when it ended.
+        let store = store();
+        store.create_run("done", 1, "hotpot").unwrap();
+        store.cancel_run("done").unwrap();
+        let before = store.get_run("done").unwrap().unwrap();
+        let finished_at = before["finished_at"].as_i64().unwrap();
+
+        store.create_run("running", 2, "hotpot").unwrap();
+        store.reconcile_interrupted_runs().unwrap();
+
+        let after = store.get_run("done").unwrap().unwrap();
+        assert_eq!(after["status"], "cancelled");
+        assert_eq!(after["finished_at"].as_i64().unwrap(), finished_at);
+        assert!(after["error"].as_str().unwrap_or("").is_empty());
+    }
+
+    #[test]
+    fn reconciliation_is_idempotent_and_a_no_op_when_nothing_is_running() {
+        // Runs at every startup, so a second sweep must find nothing to do rather
+        // than re-stamping rows it already closed.
+        let store = store();
+        store.create_run("run1", 1, "hotpot").unwrap();
+        store.reconcile_interrupted_runs().unwrap();
+        let after_first = store.get_run("run1").unwrap().unwrap();
+
+        assert!(store.reconcile_interrupted_runs().unwrap().is_empty());
+        let after_second = store.get_run("run1").unwrap().unwrap();
+        assert_eq!(after_first, after_second);
+    }
+
+    #[test]
+    fn reconciliation_does_not_disturb_a_run_started_by_this_host() {
+        // The sweep runs once, before anything can be started, so the only way a
+        // `running` row exists at that point is a leftover. Locking the behaviour
+        // down: a run created after the sweep must not be retroactively closed.
+        let store = store();
+        store.reconcile_interrupted_runs().unwrap();
+        store.create_run("fresh", 1, "hotpot").unwrap();
+
+        assert!(store
+            .reconcile_interrupted_runs()
+            .unwrap()
+            .contains(&"fresh".to_string()));
     }
 
     #[test]

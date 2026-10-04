@@ -31,6 +31,28 @@ pub fn run() {
                 ))
             })?;
 
+            // Runs whose host was killed outright never reach any settlement
+            // path, because all of them run inside the host. Sweep them here,
+            // while a `running` row is guaranteed stale: the process that owned it
+            // is the one that just exited. Left alone they are not merely wrong,
+            // they block every future run. See `Store::reconcile_interrupted_runs`.
+            match store.reconcile_interrupted_runs() {
+                Ok(stale) if !stale.is_empty() => {
+                    eprintln!(
+                        "closed {} run(s) left running by a previous session: {}",
+                        stale.len(),
+                        stale.join(", ")
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    // Not fatal. The database opened, so the app can still work;
+                    // failing to start over a sweep would be a worse outcome than
+                    // the phantom runs it is trying to clear.
+                    eprintln!("could not reconcile interrupted runs: {e}");
+                }
+            }
+
             app.manage(commands::AppState {
                 store: Arc::new(store),
                 python,

@@ -186,6 +186,52 @@ The WebView is attached over the DevTools protocol rather than through
 WebView2 runtime version. That needs nothing installed, but it is Windows and
 WebView2 only. `-SkipBuild` reuses the existing build.
 
+## The packaged build
+
+`verify.ps1` builds a production bundle and `verify-window.ps1` runs the app from
+`tauri dev`, so between them they leave the one thing a release build does
+differently untested: the packaged window serves its assets from Tauri's own
+`tauri.localhost` protocol instead of the Vite dev server, and every route and
+asset reference resolves against that. That is where hash routing would break -
+`#/results` becomes a request for a file called `results`, which does not exist
+in the bundle - and where the sidecar would fail to launch from a process that
+inherits nothing from a dev shell.
+
+`smoke-packaged.ps1` covers it, driving the built executable on a separate port:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke-packaged.ps1
+```
+
+It is a separate script on purpose. Sharing one with `verify-window.ps1` would
+mean the launch was conditional on which mode was under test, and the mode is
+the thing being tested.
+
+Note that `cargo build --release` is not a substitute for `npm run tauri build`
+here. A plain cargo build bakes `devUrl` into the binary, so the result loads
+`localhost:1420` and looks healthy while testing nothing. The smoke script's
+`tauri.localhost` assertion is what catches that, which is the argument for
+asserting on the URL at all.
+
+## Runs left behind by a dead host
+
+Every settlement path - `fail_run`, `cancel_run`, the terminal event handlers -
+runs *inside* the host, so it only sees outcomes it was still alive to observe. A
+host killed outright (`taskkill /F`, a crash, a power cut) reaches none of them,
+and the row stays `running` forever. That is not cosmetic: the Run page refuses
+to start while anything looks in progress, so one phantom run wedges the app
+permanently.
+
+`Store::reconcile_interrupted_runs` sweeps those at startup, where a `running`
+row is stale by definition - the process that owned it is the one that just
+exited. It marks them `failed` rather than `cancelled`, because nothing asked for
+them to stop, and records why in the error column.
+
+The reasoning depends on there being one host per database, which is the same
+assumption the single `ActiveRunSlot` and the single-writer SQLite connection
+already make. A real deployment wants `tauri-plugin-single-instance` in front of
+`setup`, and the doc comment on the sweep says so.
+
 When a run misbehaves, `scripts/run-timeline.py` prints its events with offsets
 from the first, which distinguishes "carried on after the cancel" from "was
 killed and then overwritten" - two failures that look identical in the run row.
