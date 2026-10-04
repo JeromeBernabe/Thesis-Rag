@@ -141,15 +141,28 @@ def test_known_corrupt_token_columns_are_flagged_not_averaged(dataset, stored):
 
 
 def test_no_token_figure_is_published_while_the_columns_are_duplicates(stored):
-    """`jta`/`jtb` are absent rather than equal to the generator's counts.
+    """Nothing derived from the corrupt columns may reach the JSON.
 
-    Publishing them would reintroduce the exact confusion being fixed.
+    Two directions, both of which have already gone wrong here:
+
+    - `jta`/`jtb` must be *absent*; publishing them would reintroduce the exact
+      confusion being fixed.
+    - `ta`/`tb`/`eff_*`/`t_pct` must be *null* rather than carrying the judge
+      counts. Reporting a number under the wrong label is not a smaller mistake
+      than reporting none, and the file previously did exactly that - it warned
+      about the duplicated columns while still averaging `completion_tokens`
+      into "generation tokens".
     """
     for dataset in DATASETS:
         for key in ("jta", "jtb", "ja_pct"):
             assert key not in stored[dataset], (
                 f"{dataset}.{key} is published while the judge token columns are copies "
                 f"of the generator's"
+            )
+        for key in ("ta", "tb", "eff_a", "eff_b", "t_pct"):
+            assert stored[dataset][key] is None, (
+                f"{dataset}.{key} = {stored[dataset][key]!r}, but the token columns hold "
+                f"the judge's counts, so this figure cannot be recovered from these CSVs"
             )
 
 

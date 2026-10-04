@@ -104,6 +104,32 @@ def _clean(value):
     return value
 
 
+def judge_columns_are_duplicates(df: pd.DataFrame) -> bool:
+    """Whether `completion_tokens`/`prompt_tokens` are really judge counts.
+
+    The runners used to log the judge's token counts into the generator's
+    columns, so in the historical files `completion_tokens` is not the
+    answering model's output - it is the judge's, duplicated. That is provable
+    rather than suspected: `judge_completion_tokens == completion_tokens` in
+    every row.
+
+    It matters because these columns are not merely mislabelled, they are the
+    *only* token figures in the file. Once they are known to be judge counts,
+    neither the judge's cost nor the generator's can be recovered, and anything
+    derived from them - including tokens-per-unit-faithfulness - has to be
+    withheld rather than reported under a label that is merely wrong.
+    """
+    for jc, gc in (
+        ("judge_completion_tokens", "completion_tokens"),
+        ("judge_prompt_tokens", "prompt_tokens"),
+    ):
+        if jc in df.columns and gc in df.columns:
+            both = df[[jc, gc]].dropna()
+            if not both.empty and (both[jc] == both[gc]).all():
+                return True
+    return False
+
+
 def validate(df: pd.DataFrame) -> list[str]:
     """Flag columns that cannot be taken at face value.
 
@@ -128,6 +154,14 @@ def validate(df: pd.DataFrame) -> list[str]:
                     f"{jc} is identical to {gc} in every row, so judge token usage was never "
                     f"recorded separately; the judge cost cannot be reported from this file"
                 )
+
+    if judge_columns_are_duplicates(df):
+        warnings.append(
+            "prompt_tokens and completion_tokens hold the judge's counts (see above), so "
+            "neither the judge's nor the generator's token usage is recoverable from this "
+            "file; ta, tb and the tokens-per-faithfulness figures are withheld rather than "
+            "reported under a label that is merely wrong"
+        )
 
     if {"total_tokens", "prompt_tokens", "completion_tokens"} <= set(df.columns):
         expected = df["prompt_tokens"] + df["completion_tokens"]
@@ -182,15 +216,26 @@ def build_dataset(df: pd.DataFrame, source: Path) -> dict:
     out["data_warnings"] = validate(df)
 
     # Tokens and latency.
+    #
+    # `completion_tokens` is only the generator's output when the file does not
+    # predating the logging fix. Where the judge columns duplicate it, that column
+    # holds judge tokens, so the generator's output is unknown and *no* token
+    # figure can be published - reporting it under the wrong label is not a
+    # smaller mistake than reporting none.
+    tokens_are_generator = not judge_columns_are_duplicates(df)
     for system, suffix in (("A", "a"), ("B", "b")):
-        tokens = _mean(df, system, "completion_tokens")
+        tokens = _mean(df, system, "completion_tokens") if tokens_are_generator else None
         faith = out[METRIC_KEYS["faithfulness"][suffix]]
         out[f"t{suffix}"] = tokens
         out[f"ret_{suffix}"] = _mean(df, system, "retrieval_time_s")
         out[f"gt_{suffix}"] = _mean(df, system, "generation_time_s")
         out[f"jd_{suffix}"] = _mean(df, system, "judge_time_s")
         out[f"tt_{suffix}"] = _mean(df, system, "total_time_s")
-        out[f"eff_{suffix}"] = (faith / (tokens / 1000)) if tokens and faith == faith else float("nan")
+        out[f"eff_{suffix}"] = (
+            (faith / (tokens / 1000))
+            if tokens and tokens > 0 and faith == faith
+            else None
+        )
 
     # Judge tokens are deliberately absent: `validate` reports the judge token
     # columns as copies of the generation columns, so a number here would be the

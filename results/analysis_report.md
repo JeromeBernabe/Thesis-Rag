@@ -27,9 +27,10 @@ This report evaluates a DQN-enhanced RAG system (System B, dynamic k∈{1..5}) a
 > `bench_bridge/tests/test_report_provenance.py`. Four things changed materially:
 > hotpot's faithfulness gain was **+8.3% → +8.8%** on **50** prompts rather than 49;
 > the claimed **"3× token efficiency gain" was wrong** (the token columns held the
-> judge's counts) and is really 1.09×; RagTruth answer relevancy's **p=0.016 was a
-> wrong-direction p-value**; and the fintech context-recall drop was **not** a judge
-> artefact. Sections 3.3, 3.4 and 4 carry the details.
+> judge's counts) and is **withdrawn entirely** rather than restated as 1.09×,
+> because that ratio used the same unusable column; RagTruth answer relevancy's
+> **p=0.016 was a wrong-direction p-value**; and the fintech context-recall drop
+> was **not** a judge artefact. Sections 3.3, 3.4 and 4 carry the details.
 
 ---
 
@@ -165,18 +166,31 @@ absence rather than a metric artefact — see §12.
 
 ### 4.1 Generation Tokens (llama3.2) — completion tokens only
 
-| Dataset | System A | System B | Δ | Interpretation |
-|---------|----------|----------|---|----------------|
-| Hotpot | 587.3 | 584.1 | −0.5% | answer length essentially unchanged |
-| RagTruth | 720.8 | 733.2 | +1.7% | answer length essentially unchanged |
-| Fintech | 426.7 | 426.5 | −0.04% | no change |
-| Math | 746.6 | 742.8 | −0.5% | no change |
+**Unavailable.** This table has been withdrawn. It read:
 
-**Finding:** choosing k changes the *prompt* a great deal and the *answer* almost
-not at all — every dataset is within 2%. The context budget is spent upstream in
-retrieval, not on longer generations.
+| Dataset | System A | System B | Δ |
+|---------|----------|----------|---|
+| Hotpot | 587.3 | 584.1 | −0.5% |
+| RagTruth | 720.8 | 733.2 | +1.7% |
+| Fintech | 426.7 | 426.5 | −0.04% |
+| Math | 746.6 | 742.8 | −0.5% |
+
+Those numbers are the *judge's* completion tokens, not the generator's — the
+defect above. The table also carried a conclusion drawn from them ("choosing k
+changes the prompt a great deal and the answer almost not at all; the context
+budget is spent upstream in retrieval"), and that conclusion is withdrawn with
+it: it described how much the judge wrote when breaking an answer into claims,
+which is not a measurement of answer length.
+
+`src/full_stats.py` now emits `null` for these figures rather than a number
+under a label that is wrong. Recovering them requires re-running the benchmarks;
+the code fix is in place, so a re-run is the only thing standing between this
+section and real numbers.
 
 ### 4.2 Total Request Tokens (prompt + completion)
+
+This is the one token measurement these CSVs do support: `total_tokens` came
+from the generator's own response and was never affected by the logging defect.
 
 | Dataset | System A | System B | Δ |
 |---------|----------|----------|---|
@@ -185,28 +199,32 @@ retrieval, not on longer generations.
 | Fintech | 2,560 | 2,922 | +14.1% |
 | Math | 692 | 699 | +1.1% |
 
+**Finding:** total request tokens are where the effect of k actually shows, and
+they are not a consistent story. System B (larger k) sends far fewer tokens on
+hotpot and far more on the other three, so there is no general efficiency claim
+this thesis can make from these runs.
+
 **Unavailable — judge tokens (qwen3:8b).** The judge-token columns duplicate the
 generator's in every row, so no judge token figure can be derived from these
 files. Judge *wall-clock* is real and is reported in §5.
 
 ### 4.3 Token Efficiency (Faithfulness per 1k Generation Tokens)
 
-| Dataset | System A | System B | Ratio |
-|---------|----------|----------|-------|
-| Hotpot | 1.019 | 1.115 | **1.09× more efficient** |
-| RagTruth | 1.168 | 1.145 | 0.98× (less efficient) |
-| Fintech | 1.909 | 2.037 | 1.07× (more efficient) |
-| Math | 0.702 | 0.643 | 0.92× (less efficient) |
+**Unavailable.** Withdrawn for the same reason as §4.1: it divides faithfulness
+by the mislabelled column.
 
-> **Correction.** This table previously read 0.148 → 0.447 for hotpot, a "3×
-> efficiency gain", and the report called it the key token finding. Both numbers
-> were wrong: they divided faithfulness by the old mislabelled token column. The
-> real effect is 1.09×, well within noise at n=50. There is no meaningful token
-> efficiency gain on any dataset.
+> **Correction, twice over.** This table previously read 0.148 → 0.447 for
+> hotpot, a "3× efficiency gain", and the report called it the key token
+> finding. Both numbers were wrong: they divided faithfulness by the
+> mislabelled token column. Rewriting the denominator as a judge-token count
+> turned "3×" into 1.09× — still wrong, still on the same corrupt column, and
+> for long enough to look like a corrected result rather than a broken one.
+> Faithfulness per 1k tokens is not reported here at all.
 
-**Key finding:** Token efficiency is effectively flat across all four datasets.
-The honest version of this result is that generation length is nearly constant
-regardless of k, so efficiency tracks faithfulness almost exactly.
+The efficiency question is answerable, and §4.2 answers part of it: with
+`total_tokens` valid, System B spends 64.4% fewer request tokens on hotpot at
+equal-or-better faithfulness. That is a narrower claim than "token efficiency
+improves", and it is the one the data supports.
 
 ---
 
@@ -341,14 +359,14 @@ via `src/full_stats.py`; `bench_bridge/tests/test_report_provenance.py` fails if
 2. **No consistent faithfulness improvement** — only Hotpot and Fintech show positive trends, neither significant
 3. **Significant answer relevancy degradation on RagTruth** — two-tailed p=0.033, System B is worse. This was previously reported as p=0.016, which was the one-tailed value on the wrong side of the hypothesis
 4. **Math shows degradation** — DQN hurts on self-contained reasoning tasks
-5. **Token efficiency is flat** — at most 1.09× on Hotpot, within noise. The earlier "3× gain" came from token columns that held the judge's counts (§4)
+5. **Token efficiency cannot be reported** — the generator's token columns in these CSVs hold the judge's counts, so both the original "3× gain" and the 1.09× restatement of it are withdrawn. Only total request tokens survive as valid, and they move in opposite directions across datasets (§4)
 6. **Judge scoring dominates cost** — 90-97% of latency is qwen3:8b evaluation
 7. **Neither significant result is an improvement.** Both regressions.
 
 ### 9.2 Thesis Implications
 
 - **Novel contribution:** DQN can learn dataset-specific k-selection without explicit supervision
-- **Positive:** Hotpot demonstrates that reducing context can improve faithfulness and efficiency
+- **Positive:** Hotpot demonstrates that reducing context can improve faithfulness, at 64.4% fewer total request tokens (§4.2)
 - **Caveat:** Results are dataset-dependent; no universal improvement
 - **Negative:** Math tasks show degradation; answer relevancy can degrade
 - **Practical:** Token savings only matter under paid API inference
