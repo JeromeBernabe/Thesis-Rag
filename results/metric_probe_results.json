@@ -1,0 +1,73 @@
+{
+  "judge_model": "qwen3:8b",
+  "results": {
+    "faithfulness": [
+      {
+        "name": "verbatim_support",
+        "expect": "high",
+        "score": 1.0,
+        "seconds": 11.3,
+        "bound": 0.8
+      },
+      {
+        "name": "contradicted_by_context",
+        "expect": "low",
+        "score": 0.0,
+        "seconds": 12.5,
+        "bound": 0.4
+      },
+      {
+        "name": "partially_fabricated",
+        "expect": "mid",
+        "score": 0.6666666666666666,
+        "seconds": 25.8,
+        "low_bound": 0.4,
+        "high_bound": 0.9
+      },
+      {
+        "name": "wholly_fabricated",
+        "expect": "low",
+        "score": 0.0,
+        "seconds": 35.8,
+        "bound": 0.2
+      },
+      {
+        "name": "wholly_unrelated_answer",
+        "expect": "low",
+        "score": 0.0,
+        "seconds": 17.7,
+        "bound": 0.4
+      }
+    ],
+    "context_recall": [
+      {
+        "name": "reference_present_verbatim",
+        "expect": "high",
+        "score": 1.0,
+        "seconds": 32.2,
+        "bound": 0.8
+      },
+      {
+        "name": "reference_absent",
+        "expect": "low",
+        "score": 0.0,
+        "seconds": 32.4,
+        "bound": 0.4
+      },
+      {
+        "name": "reference_present_paraphrased",
+        "expect": "high",
+        "score": 1.0,
+        "seconds": 22.5,
+        "bound": 0.6
+      },
+      {
+        "name": "reference_absent_but_topically_close",
+        "expect": "low",
+        "score": 1.0,
+        "seconds": 22.3,
+        "bound": 0.4
+      }
+    ]
+  }
+}

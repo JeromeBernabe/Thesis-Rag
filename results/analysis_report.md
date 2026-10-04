@@ -20,7 +20,7 @@ This report evaluates a DQN-enhanced RAG system (System B, dynamic k∈{1..5}) a
 4. **Math shows degradation:** −8.9% faithfulness (p=0.90, one-tailed), suggesting DQN hurts on math reasoning
 5. **Judge scoring (qwen3:8b) dominates cost:** 90-97% of wall-clock time across all datasets
 6. **Both statistically significant results are regressions, not gains:** RagTruth answer relevancy (two-tailed p=0.033) and fintech context recall (p=0.022)
-7. **Context recall needs validation before use:** near-zero for fintech under both systems (0.110 / 0.032). See §12
+7. **Metric behaviour was validated by probe:** faithfulness correctly rejects unsupported claims; context recall is lenient but biased high, which makes the low fintech scores meaningful rather than suspect (§12)
 
 > **Corrections applied 2026-10-04.** Every number below was regenerated from the
 > result CSVs by `src/full_stats.py` and is checked by
@@ -132,9 +132,10 @@ hypothesis B>A is 0.984, because B is on the wrong side of it.
 > missing rows. The NaN failures occurred in the *hotpot* run, and hotpot's
 > context recall is the one that lost a prompt (n=49, §11).
 
-Context recall remains the least trustworthy metric here — it is near zero for
-fintech under both systems (0.110 and 0.032), which is low enough to warrant
-checking the metric's behaviour before relying on the fintech gap. See §12.
+Context recall saturates at 1.0 whenever the context is on-topic, even when the
+specific reference claim is absent (`probe_metrics.py`). That leniency biases it
+*towards* high scores, so fintech's near-zero values are evidence of genuine
+absence rather than a metric artefact — see §12.
 
 ---
 
@@ -321,7 +322,7 @@ via `src/full_stats.py`; `bench_bridge/tests/test_report_provenance.py` fails if
 2. **RagTruth needs k=4:** Fact verification requires multiple supporting/contradicting evidence pieces
 3. **Fintech is baseline-like:** Domain queries are well-served by k=3; DQN learns to stay near baseline
 4. **Math degrades with more context:** Math problems benefit from focused reasoning, not additional documents
-5. **Context recall is questionable on Fintech:** both systems score near zero (0.110 / 0.032) with no missing values. This is a property of the metric on this data, not of judge failures — see §3.4 and §12
+5. **Context recall is a presence detector, not a coverage score:** it returns 1.0 for on-topic context even when the reference is absent, so its low fintech values indicate genuine absence while its high values say little about how much was covered (§12)
 
 ### 8.3 Pattern: DQN Works When...
 
@@ -436,12 +437,37 @@ of qwen3:8b cannot be separated from the generator's in these runs. Judge
 wall-clock (~50–81 s/query) is genuine and dominates the cost, so the *conclusion*
 that judging dominates stands; the *token* accounting does not exist for these runs.
 
-**Context recall behaves anomalously on fintech.** Both systems score near zero
-(0.110 and 0.032) with no missing values and no warnings. A metric that returns
-almost nothing across 50 prompts regardless of the system under test is more
-likely to be mis-specified for this data than to be reporting a −70.9% effect.
-This should be validated with a labelled subset before the fintech context-recall
-result is cited as a finding.
+**Metric behaviour was probed, and both metrics are usable — with one caveat.**
+`probe_metrics.py` runs hand-built cases with an unambiguous correct answer
+through the real judge; results are recorded in `results/metric_probe_results.json`
+and asserted by `bench_bridge/tests/test_metric_probes.py`.
+
+*Faithfulness is sound.* Against qwen3:8b it scores **0.0** for a claim the
+context contradicts, **0.0** for wholly fabricated content, **0.0** for an answer
+unrelated to the context, and **2/3** for a mixed answer where two of three
+statements are supported. The 1.0 scores in these runs are therefore plausible
+rather than a judge that always agrees.
+
+*Context recall is lenient.* It scores **1.0** for a reference that is **not in
+the context at all**, provided the context is on the same topic. It separates
+"completely unrelated" (0.0) from "on topic" (1.0), but not "on topic and missing
+the specific claim" — which it calls full recall.
+
+That leniency runs in the direction that *strengthens* the fintech result rather
+than undermining it. The metric is biased towards scoring high, so the observed
+**0.032** for system B cannot be explained by leniency: those reference answers
+genuinely were not in the retrieved context. The −70.9% gap is a real retrieval
+difference.
+
+> **Correction.** An earlier draft of this section claimed the fintech
+> context-recall result was more likely a mis-specified metric than a real
+> −70.9% effect. The probe shows the opposite: the metric over-scores, so a
+> near-zero score is strong evidence of absence. The hedge has been removed
+> because the evidence contradicts it.
+
+The caveat that remains: because context recall saturates at 1.0 for on-topic
+context, it cannot measure *how much* of a reference was covered. It is a usable
+detector of "was this answer in the context at all", not a graded coverage score.
 
 **Sample size.** 50 prompts per dataset is small for paired tests on differences
 of this size. Fintech faithfulness (p=0.092) would need roughly n=100 to reach
@@ -451,6 +477,13 @@ of this size. Fintech faithfulness (p=0.092) would need roughly n=100 to reach
 "system B" on hotpot is very nearly "system A with k=1". Conclusions about the
 DQN as a *policy* rest on RagTruth (k=4 in 46/50) being the informative case;
 on the other three datasets the policy is close to a constant.
+
+**The hotpot policy is untrained.** `checkpoints/dqn_model_hotpot.pth` has
+`steps=0` and `epsilon=0.995`, i.e. its initial values, while the other three
+checkpoints are at `steps=43`. A k=1 selection rate of 49/50 from an untrained
+network is best read as the reward structure favouring small k (the reward
+includes a `−λ·log(1+k)` term), not as a learned policy. The hotpot comparison
+should be described as *k=1 vs k=3*, not as *DQN vs baseline*.
 
 ---
 
