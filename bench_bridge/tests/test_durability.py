@@ -559,3 +559,105 @@ def test_significance_flag_follows_the_one_tailed_value(b_worse):
 
     assert r["sig_one_tailed"] == (r["p_one_tailed"] < 0.05)
     assert r["sig_one_tailed"] is False
+
+# --------------------------------------------------------------------------
+# Per-prompt token columns must describe the generator, not the judge
+# --------------------------------------------------------------------------
+
+
+def test_logged_token_columns_are_not_the_judges(tmp_path):
+    """The defect: both runners filled `prompt_tokens` from the judge's result.
+
+    `result_logger.log(prompt_tokens=scores.get("judge_prompt_tokens"), ...)`
+    wrote the judge's prompt count into the generator's column, so the two were
+    the same number in every row and the generator's real usage - which Ollama
+    had already returned - was thrown away. Every token figure in the thesis
+    that used those columns was the judge's cost wearing the generator's label.
+
+    Checked by replaying the same expressions the runners use against a stub
+    whose generator and judge report deliberately different counts.
+    """
+    generation = {"prompt_tokens": 4621, "completion_tokens": 587, "total_tokens": 5208}
+    scores = {"judge_prompt_tokens": 999, "judge_completion_tokens": 7}
+
+    logger = ResultLogger(tmp_path / "results.csv")
+    logger.log(
+        prompt_id="p1", system_id="A",
+        faithfulness=0.5, answer_relevancy=0.5, context_recall=0.5, retrieved_k=3,
+        # What the runners now pass:
+        prompt_tokens=generation["prompt_tokens"],
+        completion_tokens=generation["completion_tokens"],
+        total_tokens=generation["total_tokens"],
+        judge_prompt_tokens=scores["judge_prompt_tokens"],
+        judge_completion_tokens=scores["judge_completion_tokens"],
+    )
+    row = pd.read_csv(tmp_path / "results.csv").iloc[0]
+
+    assert row["prompt_tokens"] == 4621
+    assert row["completion_tokens"] == 587
+    assert row["total_tokens"] == 5208
+    assert row["judge_prompt_tokens"] == 999
+    assert row["judge_completion_tokens"] == 7
+    # The whole point: the two pairs are distinguishable now.
+    assert row["prompt_tokens"] != row["judge_prompt_tokens"]
+    assert row["completion_tokens"] != row["judge_completion_tokens"]
+
+
+@pytest.mark.parametrize("runner", ["run_experiment.py", "run_experiment_logged.py"])
+def test_runners_do_not_read_judge_tokens_into_generation_columns(runner):
+    """Guard the source, not just the effect.
+
+    The bug was a copy-paste across four call sites in two files, so it is easy
+    to reintroduce in one of them.
+    """
+    import re
+
+    text = (Path(__file__).resolve().parents[2] / runner).read_text(encoding="utf-8")
+# Every `prompt_tokens=` / `completion_tokens=` argument must be fed from
+    # the answer dict, never from the judge's score dict. The lookbehind is
+    # what keeps `judge_prompt_tokens=scores.get(...)` - which is correct and
+    # must stay - from matching on its own `prompt_tokens=` suffix.
+    bad = re.findall(
+        r"(?<!judge_)(?:prompt_tokens|completion_tokens)=scores\.get\(\"judge_\w+\"\)", text
+    )
+    assert bad == [], f"{runner} logs judge tokens into generation columns: {bad}"
+
+
+def test_full_stats_flags_judge_tokens_that_are_a_copy(tmp_path):
+    """A duplicated column must be reported, not silently averaged."""
+    from src.full_stats import validate
+
+    df = pd.DataFrame({
+        "prompt_id": ["p1", "p1"],
+        "system_id": ["A", "B"],
+        "prompt_tokens": [100, 200],
+        "completion_tokens": [10, 20],
+        "judge_prompt_tokens": [100, 200],       # copy - never recorded
+        "judge_completion_tokens": [10, 20],     # copy - never recorded
+        "total_tokens": [110, 220],
+        "retrieved_k": [3, 4],
+    })
+    warnings = validate(df)
+    assert any("judge_completion_tokens is identical" in w for w in warnings)
+    assert any("judge_prompt_tokens is identical" in w for w in warnings)
+    assert not any("total_tokens is not" in w for w in warnings)
+
+    # And with real, distinct judge numbers the warning goes away.
+    df["judge_prompt_tokens"] = [900, 950]
+    df["judge_completion_tokens"] = [5, 6]
+    warnings = validate(df)
+    assert not any("identical to" in w for w in warnings)
+
+
+def test_full_stats_flags_a_total_that_is_not_the_sum(tmp_path):
+    from src.full_stats import validate
+
+    df = pd.DataFrame({
+        "prompt_id": ["p1"], "system_id": ["A"],
+        "prompt_tokens": [100], "completion_tokens": [10],
+        "judge_prompt_tokens": [900], "judge_completion_tokens": [5],
+        "total_tokens": [42],  # neither the sum nor anything explainable
+        "retrieved_k": [3],
+    })
+    warnings = validate(df)
+    assert any("total_tokens is not" in w for w in warnings)
