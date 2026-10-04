@@ -485,6 +485,39 @@ network is best read as the reward structure favouring small k (the reward
 includes a `−λ·log(1+k)` term), not as a learned policy. The hotpot comparison
 should be described as *k=1 vs k=3*, not as *DQN vs baseline*.
 
+### Judge throughput
+
+The judge dominates the cost of a run, so its wall-clock was measured rather
+than assumed. `results/concurrency_verification.json` records the comparison
+(3 prompts, qwen3:8b, three runs: sequential twice then concurrent), because a
+single sequential-versus-concurrent comparison cannot tell a concurrency defect
+apart from a model that simply does not answer the same way twice. The judge is
+deterministic at temperature 0 here, and concurrent scoring matched sequential
+scoring on every metric and every judge token count.
+
+Two separate findings, because they apply to different callers:
+
+- **Batch scoring** (`RagasScorer.score` over many prompts) was 2.0x faster at 4
+  workers on an idle GPU.
+- **Within one prompt** the three metrics are independent and now run
+  concurrently, which is the only parallelism available to `run_experiment*.py`.
+  Those runners judge one prompt at a time by design - the reward is the DQN's
+  next training signal, and each row is written as soon as it is judged so a
+  killed host does not lose the run - so cross-prompt concurrency would undo
+  that. Measured on the runner's own path: 36.4s to 24.6s per prompt, with
+  identical metrics and identical judge token counts.
+
+Caveat on the recorded figure: the `speedup` in `concurrency_verification.json`
+was measured while an unrelated process was saturating the GPU, which is why it
+reads 1.54x rather than the 2.0x seen on an idle device. Treat it as a lower
+bound; re-run `python verify_concurrency.py` on an otherwise idle machine to
+refresh it.
+
+This affects runtime only. No metric in the tables above was computed with
+concurrent scoring enabled - they come from the stored CSVs described in
+section 11, and the equivalence check exists to show that adding concurrency
+does not change what those numbers would be.
+
 ---
 
 ## Appendix A: Raw Data Files

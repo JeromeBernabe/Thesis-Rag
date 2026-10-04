@@ -21,6 +21,7 @@ import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from typing import Any
 
 import numpy as np
 import requests
@@ -426,24 +427,76 @@ class RagasScorer:
         reference: str | None,
         metric_names: list[str],
     ) -> dict[str, float | None]:
-        counters = self._reset_counters()
-        row: dict[str, float | None] = {}
+        """Score one prompt.
+
+        The three metrics are independent of each other - none reads another's
+        output - so they run concurrently here. This is the only place
+        parallelism helps a live experiment: `run_experiment*.py` judges one
+        prompt at a time and has to, because the reward from that judge is the
+        DQN's next training signal and because each row is written the moment it
+        is judged, so a host killed mid-pass does not lose the whole run. Within
+        a prompt there is nothing to preserve, and the judge is the entire cost
+        of the run, so this is where the wall-clock actually goes.
+        """
+        tasks: list[tuple[str, Any]] = []
         if "faithfulness" in metric_names:
-            row["faithfulness"] = self._score_faithfulness(question, response, contexts)
+            tasks.append(("faithfulness", lambda: self._score_faithfulness(question, response, contexts)))
         if "answer_relevancy" in metric_names:
-            row["answer_relevancy"] = self._score_answer_relevancy(question, response)
+            tasks.append(("answer_relevancy", lambda: self._score_answer_relevancy(question, response)))
         if "context_recall" in metric_names:
             if reference is None:
                 logger.warning("ContextRecall requires a ground-truth reference; score = NaN")
-                row["context_recall"] = None
             else:
-                row["context_recall"] = self._score_context_recall(
-                    question, response, contexts, reference
-                )
+                tasks.append((
+                    "context_recall",
+                    lambda: self._score_context_recall(question, response, contexts, reference),
+                ))
+
+        row: dict[str, float | None] = {}
+        if len(tasks) <= 1 or self.max_workers <= 1:
+            self._reset_counters()
+            for name, task in tasks:
+                row[name] = task()
+            counters = self._current_counters()
+        else:
+            # Each metric runs on a worker thread with its own counters, so the
+            # per-row totals are the sum over the metrics rather than whichever
+            # thread happened to finish last.
+            results: list[tuple[str, float | None, dict[str, Any]]] = []
+            with ThreadPoolExecutor(
+                max_workers=len(tasks), thread_name_prefix="ragas-metric"
+            ) as pool:
+                futures = [pool.submit(self._run_metric, task) for _, task in tasks]
+                first_error: BaseException | None = None
+                for (name, _), future in zip(tasks, futures):
+                    try:
+                        results.append((name, *future.result()))
+                    except BaseException as exc:  # noqa: BLE001 - re-raised below
+                        results.append((name, None, {}))
+                        if first_error is None:
+                            first_error = exc
+            if first_error is not None:
+                raise first_error
+            for name, value, metric_counters in results:
+                row[name] = value
+            counters = {
+                "judge_prompt_tokens": sum(c["judge_prompt_tokens"] for _, _, c in results),
+                "judge_completion_tokens": sum(c["judge_completion_tokens"] for _, _, c in results),
+                "judge_time_s": sum(c["judge_time_s"] for _, _, c in results),
+            }
+
+        if reference is None and "context_recall" in metric_names:
+            row["context_recall"] = None
         row["judge_prompt_tokens"] = counters["judge_prompt_tokens"]
         row["judge_completion_tokens"] = counters["judge_completion_tokens"]
         row["judge_time_s"] = counters["judge_time_s"]
         return row
+
+    def _run_metric(self, task) -> tuple[float | None, dict[str, Any]]:
+        """Run one metric on the calling thread with its own fresh counters."""
+        self._reset_counters()
+        value = task()
+        return value, self._current_counters()
 
     def close(self) -> None:
         """Release the embedding client's connections.

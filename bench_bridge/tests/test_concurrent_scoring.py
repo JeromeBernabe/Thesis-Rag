@@ -1,4 +1,4 @@
-"""Concurrent scoring must be indistinguishable from sequential scoring.
+﻿"""Concurrent scoring must be indistinguishable from sequential scoring.
 
 `RAGAS_MAX_WORKERS` was a constant of 1 with the comment "sequential by
 construction", so the knob did nothing. Bounded concurrency is now real, which
@@ -55,15 +55,28 @@ class StubJudge:
         self.delay = delay
         self.calls: list[str] = []
         self._lock = threading.Lock()
+        self.in_flight = 0
         # Deliberately uneven delays: with equal delays a completion-order bug
         # would coincidentally match input order.
         self._n = 0
 
     def __call__(self, prompt: str, max_tokens: int = 400):
+        global _DEPTH
         with self._lock:
             self._n += 1
             n = self._n
             self.calls.append(prompt[:40])
+            # Peak simultaneous judge calls, so a test can assert that work
+            # actually overlapped rather than inferring it from a timing.
+            scorer_max_depth[0] = max(scorer_max_depth[0], self.in_flight + 1)
+            self.in_flight += 1
+        try:
+            return self._answer(prompt, n)
+        finally:
+            with self._lock:
+                self.in_flight -= 1
+
+    def _answer(self, prompt: str, n: int) -> dict:
         # Later calls finish sooner, so completion order != input order.
         time.sleep(self.delay * (n % 3 + 1))
 
@@ -141,6 +154,20 @@ def make_scorer(monkeypatch, judge, **kwargs) -> RagasScorer:
     monkeypatch.setattr(scorer, "_complete_json", judge)
     monkeypatch.setattr(scorer, "_embeddings", FakeEmbeddings())
     return scorer
+
+
+# One prompt, reference and contexts, shaped like the real scorer's arguments.
+SINGLE_CASE = (
+    "question number 0 about a city",
+    "answer number 0 with some detail",
+    ["context 0a says a thing", "context 0b says another"],
+    "ref 0 says a thing",
+)
+
+# Peak number of stub judge calls in flight at once, recorded by the instrumented
+# stub below. A plain attribute rather than a fixture: it is written from worker
+# threads while the test thread reads it after join.
+scorer_max_depth = [0]
 
 
 def questions(n):
@@ -287,3 +314,47 @@ def test_counters_are_isolated_per_thread(monkeypatch):
 
     assert out["a"]["judge_prompt_tokens"] == 12
     assert out["b"]["judge_prompt_tokens"] == 12
+
+
+def test_the_three_metrics_of_one_prompt_run_concurrently(monkeypatch):
+    """The win that reaches a real experiment.
+
+    `run_experiment*.py` judges one prompt at a time and must - the reward is
+    the DQN's next training signal, and each row is written as soon as it is
+    judged so a killed host does not lose the run. So cross-prompt concurrency
+    cannot help there, and the only parallelism available is *within* a prompt.
+    This asserts the three metrics actually overlap.
+    """
+    # Reset first: the peak is module-level and the batch tests above push it
+    # higher, which would make this assertion pass for the wrong reason.
+    scorer_max_depth[0] = 0
+    scorer = make_scorer(monkeypatch, StubJudge(delay=0.2), max_workers=3)
+    scorer.score_single(*SINGLE_CASE)
+    assert scorer_max_depth[0] >= 2, (
+        f"metrics ran one after another (peak {scorer_max_depth[0]} judge call at once)"
+    )
+
+
+def test_one_prompt_scores_identically_with_and_without_metric_threads(monkeypatch):
+    """Same values and the same per-row totals, whichever way it is scheduled."""
+    sequential = make_scorer(monkeypatch, StubJudge(delay=0.0), max_workers=1)
+    concurrent = make_scorer(monkeypatch, StubJudge(delay=0.0), max_workers=3)
+    assert sequential.score_single(*SINGLE_CASE) == concurrent.score_single(*SINGLE_CASE)
+
+
+def test_a_failing_metric_is_not_swallowed_by_the_others(monkeypatch):
+    """One metric raising must surface, not leave a silently half-filled row."""
+
+    class Exploding(StubJudge):
+        def __call__(self, prompt, max_tokens=400):
+            if "context" in prompt.lower():
+                raise RuntimeError("judge gave up on context")
+            return super().__call__(prompt, max_tokens=max_tokens)
+
+    scorer = RagasScorer(max_workers=3)
+    scorer.close()
+    monkeypatch.setattr(scorer, "_embeddings", FakeEmbeddings())
+    monkeypatch.setattr(scorer, "_complete_json", Exploding())
+    scorer.close()
+    with pytest.raises(RuntimeError, match="judge gave up on context"):
+        scorer.score_single(*SINGLE_CASE)
