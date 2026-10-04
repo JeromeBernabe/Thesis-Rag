@@ -18,7 +18,9 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import requests
@@ -70,8 +72,32 @@ class RagasScorer:
         # Cleared at runtime if the local Ollama build rejects the field.
         self._think_supported = True
         self._embeddings = OllamaEmbeddings(model=embed_model, base_url=base_url)
-        # Sequential processing by construction (max_workers kept for parity).
         self.max_workers = max_workers
+
+        # --- concurrency safety ---
+        #
+        # `score()` may run several prompts at once, and three pieces of state
+        # here are shared across calls:
+        #
+        # - The judge token/time counters were plain attributes, reset at the top
+        #   of `_score_one` and accumulated by every metric helper. Run two
+        #   prompts concurrently and each one's counters absorb the other's
+        #   judge calls, so the per-row `judge_*` columns stop belonging to that
+        #   row - and a fast prompt finishing late would leave a stale total on
+        #   the next one. They are now per-thread, which is sufficient because a
+        #   task never migrates between threads inside the pool.
+        # - `_think_supported` is capability state discovered at runtime. Two
+        #   threads hitting a 400 at once could both decide to drop the field,
+        #   and one could observe it mid-update, so it is read and written under
+        #   a lock.
+        # - The embedding client is serialised. `OllamaEmbeddings` wraps a
+        #   client whose thread safety is not something we have verified, and
+        #   answer relevancy needs one embedding round-trip per scored prompt.
+        #   Serialising it costs little next to a 50-80s judge call and removes
+        #   the question entirely.
+        self._counters = threading.local()
+        self._state_lock = threading.Lock()
+        self._embed_lock = threading.Lock()
 
     # ------------------------------------------------------------------ infra
     def _complete(self, prompt: str, max_tokens: int = 400) -> tuple[str, dict]:
@@ -116,7 +142,8 @@ class RagasScorer:
                 if resp.status_code == 400 and self._think_supported:
                     # Older Ollama builds reject the unknown field outright
                     # rather than ignoring it. Stop sending it.
-                    self._think_supported = False
+                    with self._state_lock:
+                        self._think_supported = False
                     logger.info(
                         "Judge %s rejected think=false; continuing without it.",
                         self.judge_model,
@@ -167,10 +194,23 @@ class RagasScorer:
             return None
         return numerator / denominator
 
+    def _reset_counters(self) -> dict:
+        """Fresh counters for the calling thread. See the note in `__init__`."""
+        counters = {"judge_prompt_tokens": 0, "judge_completion_tokens": 0, "judge_time_s": 0.0}
+        self._counters.state = counters
+        return counters
+
+    def _current_counters(self) -> dict:
+        counters = getattr(self._counters, "state", None)
+        if counters is None:
+            counters = self._reset_counters()
+        return counters
+
     def _accumulate_judge_meta(self, meta: dict) -> None:
-        self._judge_prompt_tokens += meta.get("judge_prompt_tokens", 0)
-        self._judge_completion_tokens += meta.get("judge_completion_tokens", 0)
-        self._judge_time_s += meta.get("judge_time_s", 0.0)
+        counters = self._current_counters()
+        counters["judge_prompt_tokens"] += meta.get("judge_prompt_tokens", 0)
+        counters["judge_completion_tokens"] += meta.get("judge_completion_tokens", 0)
+        counters["judge_time_s"] += meta.get("judge_time_s", 0.0)
 
     @staticmethod
     def _verdict_value(item: dict, key: str) -> int:
@@ -294,8 +334,11 @@ class RagasScorer:
             logger.warning("AnswerRelevancy: no questions generated; score = 0")
             return 0.0
         try:
-            q_vec = np.asarray(self._embeddings.embed_query(question), dtype=np.float64).reshape(1, -1)
-            gen_vec = np.asarray(self._embeddings.embed_documents(gen_questions), dtype=np.float64)
+            # Serialised: the client is shared and its thread safety is not
+            # verified. See the note in `__init__`.
+            with self._embed_lock:
+                q_vec = np.asarray(self._embeddings.embed_query(question), dtype=np.float64).reshape(1, -1)
+                gen_vec = np.asarray(self._embeddings.embed_documents(gen_questions), dtype=np.float64)
             gen_vec = gen_vec.reshape(len(gen_questions), -1)
         except Exception as exc:  # noqa: BLE001
             logger.warning("AnswerRelevancy: embedding failed: %s", exc)
@@ -383,9 +426,7 @@ class RagasScorer:
         reference: str | None,
         metric_names: list[str],
     ) -> dict[str, float | None]:
-        self._judge_prompt_tokens = 0
-        self._judge_completion_tokens = 0
-        self._judge_time_s = 0.0
+        counters = self._reset_counters()
         row: dict[str, float | None] = {}
         if "faithfulness" in metric_names:
             row["faithfulness"] = self._score_faithfulness(question, response, contexts)
@@ -399,10 +440,33 @@ class RagasScorer:
                 row["context_recall"] = self._score_context_recall(
                     question, response, contexts, reference
                 )
-        row["judge_prompt_tokens"] = self._judge_prompt_tokens
-        row["judge_completion_tokens"] = self._judge_completion_tokens
-        row["judge_time_s"] = self._judge_time_s
+        row["judge_prompt_tokens"] = counters["judge_prompt_tokens"]
+        row["judge_completion_tokens"] = counters["judge_completion_tokens"]
+        row["judge_time_s"] = counters["judge_time_s"]
         return row
+
+    def close(self) -> None:
+        """Release the embedding client's connections.
+
+        A run creates a scorer per system and the desktop app creates one per
+        benchmark, each holding an HTTP client. Without this they are only
+        reclaimed by the garbage collector, which under a warning-as-error
+        policy shows up as an unraisable ResourceWarning rather than at the
+        call site that caused it.
+        """
+        client = getattr(self._embeddings, "client", None)
+        closer = getattr(client, "close", None)
+        if callable(closer):
+            try:
+                closer()
+            except Exception as exc:  # noqa: BLE001 - teardown is best effort
+                logger.debug("closing embedding client failed: %s", exc)
+
+    def __enter__(self) -> "RagasScorer":
+        return self
+
+    def __exit__(self, *exc_info) -> None:
+        self.close()
 
     def score(
         self,
@@ -412,12 +476,51 @@ class RagasScorer:
         references: list[str] | None = None,
         metric_names: list[str] | None = None,
     ) -> list[dict[str, float | None]]:
+        """Score every prompt, optionally several at a time.
+
+        Concurrency is bounded by `max_workers` and results are returned in
+        input order regardless of completion order, so the CSV a run writes is
+        byte-identical to the sequential one. `max_workers=1` takes the original
+        loop unchanged.
+
+        Failures are not swallowed. If one prompt exhausts the judge's retries
+        the exception propagates, exactly as it does sequentially - a run that
+        silently dropped half its prompts is the failure mode this whole area
+        of the code was rewritten to prevent.
+        """
         metric_names = metric_names or FULL_METRICS
-        rows = []
-        for i, (q, r, ctxs) in enumerate(zip(questions, responses, retrieved_contexts)):
-            ref = references[i] if references else None
-            rows.append(self._score_one(q, r, ctxs, ref, metric_names))
-        return rows
+        pairs = list(zip(questions, responses, retrieved_contexts))
+        refs = list(references) if references else [None] * len(pairs)
+
+        workers = max(1, min(int(self.max_workers or 1), len(pairs) or 1))
+        if workers == 1:
+            return [self._score_one(q, r, ctxs, refs[i], metric_names)
+                    for i, (q, r, ctxs) in enumerate(pairs)]
+
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="ragas") as pool:
+            futures = [
+                pool.submit(self._score_one, q, r, ctxs, refs[i], metric_names)
+                for i, (q, r, ctxs) in enumerate(pairs)
+            ]
+            # Collected in submission order, not completion order.
+            #
+            # Every future is drained even after one raises. Re-raising on the
+            # first failure without touching the rest leaves their exceptions
+            # unretrieved, which Python reports as "exception was never
+            # retrieved" - noisy at best during a 50-prompt run, and an error
+            # under this repo's `filterwarnings = error`.
+            rows: list[dict[str, float | None] | None] = []
+            first_error: BaseException | None = None
+            for future in futures:
+                try:
+                    rows.append(future.result())
+                except BaseException as exc:  # noqa: BLE001 - re-raised below
+                    rows.append(None)
+                    if first_error is None:
+                        first_error = exc
+        if first_error is not None:
+            raise first_error
+        return rows  # type: ignore[return-value]
 
     def score_single(
         self,

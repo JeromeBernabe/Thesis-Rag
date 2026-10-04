@@ -1,0 +1,90 @@
+{
+  "judge_model": "qwen3:8b",
+  "cases": 3,
+  "runs": {
+    "seq_run1": {
+      "workers": 1,
+      "seconds": 65.8,
+      "rows": [
+        {
+          "faithfulness": 1.0,
+          "answer_relevancy": 0.9726250900080374,
+          "context_recall": 1.0,
+          "judge_prompt_tokens": 486,
+          "judge_completion_tokens": 107
+        },
+        {
+          "faithfulness": 1.0,
+          "answer_relevancy": 0.976626991810302,
+          "context_recall": 1.0,
+          "judge_prompt_tokens": 483,
+          "judge_completion_tokens": 107
+        },
+        {
+          "faithfulness": 1.0,
+          "answer_relevancy": 0.943720430329407,
+          "context_recall": 1.0,
+          "judge_prompt_tokens": 539,
+          "judge_completion_tokens": 151
+        }
+      ]
+    },
+    "seq_run2": {
+      "workers": 1,
+      "seconds": 69.6,
+      "rows": [
+        {
+          "faithfulness": 1.0,
+          "answer_relevancy": 0.9726250900080374,
+          "context_recall": 1.0,
+          "judge_prompt_tokens": 486,
+          "judge_completion_tokens": 107
+        },
+        {
+          "faithfulness": 1.0,
+          "answer_relevancy": 0.976626991810302,
+          "context_recall": 1.0,
+          "judge_prompt_tokens": 483,
+          "judge_completion_tokens": 107
+        },
+        {
+          "faithfulness": 1.0,
+          "answer_relevancy": 0.943720430329407,
+          "context_recall": 1.0,
+          "judge_prompt_tokens": 539,
+          "judge_completion_tokens": 151
+        }
+      ]
+    },
+    "concurrent": {
+      "workers": 4,
+      "seconds": 32.7,
+      "rows": [
+        {
+          "faithfulness": 1.0,
+          "answer_relevancy": 0.9726250900080374,
+          "context_recall": 1.0,
+          "judge_prompt_tokens": 486,
+          "judge_completion_tokens": 107
+        },
+        {
+          "faithfulness": 1.0,
+          "answer_relevancy": 0.976626991810302,
+          "context_recall": 1.0,
+          "judge_prompt_tokens": 483,
+          "judge_completion_tokens": 107
+        },
+        {
+          "faithfulness": 1.0,
+          "answer_relevancy": 0.943720430329407,
+          "context_recall": 1.0,
+          "judge_prompt_tokens": 539,
+          "judge_completion_tokens": 151
+        }
+      ]
+    }
+  },
+  "judge_repeatability_diffs": [],
+  "concurrent_vs_sequential_diffs": [],
+  "speedup": 2.01
+}
