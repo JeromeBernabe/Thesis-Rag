@@ -67,14 +67,20 @@ class RagasScorer:
         self.timeout = timeout
         self.strictness = strictness
         self.max_retries = max_retries
+        # Cleared at runtime if the local Ollama build rejects the field.
+        self._think_supported = True
         self._embeddings = OllamaEmbeddings(model=embed_model, base_url=base_url)
         # Sequential processing by construction (max_workers kept for parity).
         self.max_workers = max_workers
 
     # ------------------------------------------------------------------ infra
     def _complete(self, prompt: str, max_tokens: int = 400) -> tuple[str, dict]:
-        last_error = None
-        for attempt in range(self.max_retries + 1):
+        # `attempt` counts genuine judge failures only. Negotiating away the
+        # `think` field is capability discovery, not a transient error, so it
+        # must not consume the retry budget - otherwise a single 400 can
+        # exhaust the retries and fail a run that would otherwise have succeeded.
+        attempt = 0
+        while True:
             try:
                 payload = {
                     "model": self.judge_model,
@@ -86,6 +92,20 @@ class RagasScorer:
                         "temperature": 0.0,
                     },
                 }
+                # Thinking must be off for a judge. Reasoning models (qwen3 and
+                # friends) emit a scratchpad first, and it is billed against
+                # `num_predict`, so the JSON never finishes: a 279-token reply
+                # that was 41 tokens without it arrived as the bare text
+                # "{\n\n}", and every faithfulness and context-recall call
+                # failed after six retries with "no JSON object found". It cost
+                # four times the latency to return nothing.
+                #
+                # Sent as `think: false` rather than by filtering the model name,
+                # because the field is authoritative. A model that does not
+                # support it may reject the request outright, so the flag is
+                # dropped for good once that is seen.
+                if self._think_supported:
+                    payload["think"] = False
                 t0 = time.perf_counter()
                 resp = requests.post(
                     f"{self.base_url}/api/generate",
@@ -93,6 +113,15 @@ class RagasScorer:
                     timeout=self.timeout,
                 )
                 elapsed = time.perf_counter() - t0
+                if resp.status_code == 400 and self._think_supported:
+                    # Older Ollama builds reject the unknown field outright
+                    # rather than ignoring it. Stop sending it.
+                    self._think_supported = False
+                    logger.info(
+                        "Judge %s rejected think=false; continuing without it.",
+                        self.judge_model,
+                    )
+                    continue
                 resp.raise_for_status()
                 data = resp.json()
                 meta = {
@@ -102,12 +131,11 @@ class RagasScorer:
                 }
                 return data.get("response", ""), meta
             except Exception as exc:  # noqa: BLE001
-                last_error = exc
-                logger.warning("Judge request attempt %d failed: %s", attempt + 1, exc)
-                if attempt >= self.max_retries:
+                attempt += 1
+                logger.warning("Judge request attempt %d failed: %s", attempt, exc)
+                if attempt > self.max_retries:
                     raise
-                time.sleep(2.0 * (attempt + 1))
-        raise RuntimeError(f"unreachable: {last_error}")
+                time.sleep(2.0 * attempt)
 
     def _complete_json(self, prompt: str, max_tokens: int = 400) -> tuple[dict | None, dict]:
         last_error = None

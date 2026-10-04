@@ -12,7 +12,7 @@ from src.baseline_rag import BaselineRAG  # noqa: E402
 from src.data_loader import build_indexed_corpus, format_doc_text  # noqa: E402
 from src.dqn_agent import DQNAgent  # noqa: E402
 from src.dqn_rag import DQNRAG  # noqa: E402
-from src.logger import ResultLogger  # noqa: E402
+from src.logger import ResultLogger, promote  # noqa: E402
 from src.ragas_eval import RagasScorer  # noqa: E402
 from src.vector_store import VectorStore  # noqa: E402
 
@@ -56,47 +56,36 @@ def run_system_a(dataset: str, prompts: list[dict], logger_out: ResultLogger) ->
     logger.info("[%s] Running System A (baseline RAG, k=%d) on %d prompts...", dataset, settings.BASELINE_K, len(prompts))
     baseline = BaselineRAG(VectorStore(collection_name=collection_name_for(dataset)), dataset=dataset)
     scorer = RagasScorer()
-    answers = []
-    contexts = []
-    refs = []
-    gen_tokens = []
-    gen_times = []
-    retrieve_times = []
+    # Judged and written per prompt. The old version generated every answer,
+    # then judged all of them, then wrote - so a kill during the (long) scoring
+    # pass lost the whole run, which is exactly what happened to the math run.
     for i, prompt in enumerate(prompts):
         result = baseline.answer(prompt["question"])
-        answers.append(result["answer"])
-        contexts.append(result["contexts"])
-        refs.append(prompt.get("ground_truth"))
-        gen_tokens.append(result["total_tokens"])
-        gen_times.append(result["generation_time_s"])
-        retrieve_times.append(result["retrieval_time_s"])
-        if (i + 1) % 10 == 0 or i == len(prompts) - 1:
-            logger.info("  System A answered %d/%d prompts", i + 1, len(prompts))
-    logger.info("[%s] Scoring System A with RAGAS (sequential)...", dataset)
-    scores = scorer.score(
-        [p["question"] for p in prompts],
-        answers,
-        contexts,
-        references=refs,
-    )
-    for i, prompt in enumerate(prompts):
+        scores = scorer.score_single(
+            prompt["question"],
+            result["answer"],
+            result["contexts"],
+            reference=prompt.get("ground_truth"),
+        )
         logger_out.log(
             prompt_id=prompt["id"],
             system_id="A",
-            faithfulness=scores[i].get("faithfulness"),
-            answer_relevancy=scores[i].get("answer_relevancy"),
-            context_recall=scores[i].get("context_recall"),
+            faithfulness=scores.get("faithfulness"),
+            answer_relevancy=scores.get("answer_relevancy"),
+            context_recall=scores.get("context_recall"),
             retrieved_k=settings.BASELINE_K,
-            prompt_tokens=scores[i].get("judge_prompt_tokens"),
-            completion_tokens=scores[i].get("judge_completion_tokens"),
-            total_tokens=gen_tokens[i],
-            judge_prompt_tokens=scores[i].get("judge_prompt_tokens"),
-            judge_completion_tokens=scores[i].get("judge_completion_tokens"),
-            retrieval_time_s=retrieve_times[i],
-            generation_time_s=gen_times[i],
-            judge_time_s=scores[i].get("judge_time_s"),
-            total_time_s=retrieve_times[i] + gen_times[i] + scores[i].get("judge_time_s", 0.0),
+            prompt_tokens=scores.get("judge_prompt_tokens"),
+            completion_tokens=scores.get("judge_completion_tokens"),
+            total_tokens=result["total_tokens"],
+            judge_prompt_tokens=scores.get("judge_prompt_tokens"),
+            judge_completion_tokens=scores.get("judge_completion_tokens"),
+            retrieval_time_s=result["retrieval_time_s"],
+            generation_time_s=result["generation_time_s"],
+            judge_time_s=scores.get("judge_time_s"),
+            total_time_s=result["retrieval_time_s"] + result["generation_time_s"] + scores.get("judge_time_s", 0.0),
         )
+        if (i + 1) % 10 == 0 or i == len(prompts) - 1:
+            logger.info("  System A answered %d/%d prompts", i + 1, len(prompts))
     logger.info("[%s] System A complete: %d rows logged.", dataset, len(prompts))
 
 
@@ -124,46 +113,34 @@ def run_system_b(dataset: str, prompts: list[dict], logger_out: ResultLogger) ->
         )
 
     logger.info("[%s] Phase B.2: inference (greedy policy) on %d prompts...", dataset, len(prompts))
-    answers = []
-    contexts = []
-    refs = []
+    # Per prompt for the same reason as System A: two hours of training must not
+    # be discarded by a kill in the half hour that follows it.
     ks = []
-    inf_tokens = []
-    inf_gen_times = []
-    inf_retrieve_times = []
     for i, prompt in enumerate(prompts):
         result = dqn.answer(prompt["question"])
-        answers.append(result["answer"])
-        contexts.append(result["contexts"])
-        refs.append(prompt.get("ground_truth"))
         ks.append(result["k"])
-        inf_tokens.append(result["total_tokens"])
-        inf_gen_times.append(result["generation_time_s"])
-        inf_retrieve_times.append(result["retrieval_time_s"])
-    logger.info("[%s] Scoring System B with RAGAS (sequential)...", dataset)
-    scores = scorer.score(
-        [p["question"] for p in prompts],
-        answers,
-        contexts,
-        references=refs,
-    )
-    for i, prompt in enumerate(prompts):
+        scores = scorer.score_single(
+            prompt["question"],
+            result["answer"],
+            result["contexts"],
+            reference=prompt.get("ground_truth"),
+        )
         logger_out.log(
             prompt_id=prompt["id"],
             system_id="B",
-            faithfulness=scores[i].get("faithfulness"),
-            answer_relevancy=scores[i].get("answer_relevancy"),
-            context_recall=scores[i].get("context_recall"),
-            retrieved_k=ks[i],
-            prompt_tokens=scores[i].get("judge_prompt_tokens"),
-            completion_tokens=scores[i].get("judge_completion_tokens"),
-            total_tokens=inf_tokens[i],
-            judge_prompt_tokens=scores[i].get("judge_prompt_tokens"),
-            judge_completion_tokens=scores[i].get("judge_completion_tokens"),
-            retrieval_time_s=inf_retrieve_times[i],
-            generation_time_s=inf_gen_times[i],
-            judge_time_s=scores[i].get("judge_time_s"),
-            total_time_s=inf_retrieve_times[i] + inf_gen_times[i] + scores[i].get("judge_time_s", 0.0),
+            faithfulness=scores.get("faithfulness"),
+            answer_relevancy=scores.get("answer_relevancy"),
+            context_recall=scores.get("context_recall"),
+            retrieved_k=result["k"],
+            prompt_tokens=scores.get("judge_prompt_tokens"),
+            completion_tokens=scores.get("judge_completion_tokens"),
+            total_tokens=result["total_tokens"],
+            judge_prompt_tokens=scores.get("judge_prompt_tokens"),
+            judge_completion_tokens=scores.get("judge_completion_tokens"),
+            retrieval_time_s=result["retrieval_time_s"],
+            generation_time_s=result["generation_time_s"],
+            judge_time_s=scores.get("judge_time_s"),
+            total_time_s=result["retrieval_time_s"] + result["generation_time_s"] + scores.get("judge_time_s", 0.0),
         )
     from collections import Counter
 
@@ -199,13 +176,26 @@ def run_dataset(
     store = VectorStore(collection_name=collection_name_for(dataset), reset=reset_store)
     index_corpus(dataset, store, data_dir=data_dir)
 
-    logger_out = ResultLogger(results_path)
+    # Stage, then publish on success. See `src.logger.promote`: appending a
+    # second run to a finished CSV duplicates every (prompt_id, system_id) key
+    # and makes the paired analysis raise. Staging means a crashed run cannot
+    # destroy the previous results, and its own partial output survives for
+    # inspection.
+    results_path = Path(results_path)
+    staged_path = results_path.with_name(results_path.name + ".partial")
+    if staged_path.exists():
+        logger.info("Discarding partial output from an earlier attempt: %s", staged_path.name)
+        staged_path.unlink()
+
+    logger_out = ResultLogger(staged_path)
 
     start = time.time()
     if not skip_a:
         run_system_a(dataset, prompts, logger_out)
     if not skip_b:
         run_system_b(dataset, prompts, logger_out)
+
+    promote(staged_path, results_path)
     logger.info("[%s] Experiment finished in %.1f s. Results -> %s", dataset, time.time() - start, results_path)
 
 

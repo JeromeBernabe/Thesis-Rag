@@ -545,7 +545,7 @@ class Runner:
             if k not in ("contexts", "system_id", "index")
         }
 
-    def _judge(self, scorer, prompt: dict, result: dict) -> dict | None:
+    def _judge(self, scorer, prompt: dict, result: dict, system: str) -> dict | None:
         if self.spec.no_judge:
             return None
         from src.result_shapes import canonical_judge
@@ -559,10 +559,16 @@ class Runner:
             metric_names=list(METRICS),
         )
         judged = canonical_judge(scores)
+        # `system` is passed in rather than read off `result`, because nothing
+        # in the RAG layers sets it: `result.get("system", "A")` silently
+        # labelled every System B judge event as System A. Stored rows were
+        # unaffected (they go through `_row_from`, which is told the system), so
+        # the final statistics stayed correct while the live console showed B's
+        # scores landing in A's row.
         self.emitter.emit(
             EventType.RAGAS,
             {
-                "system": result.get("system", "A"),
+                "system": system,
                 "prompt_id": str(prompt.get("prompt_id", "")),
                 **judged,
                 "time_s": round(time.perf_counter() - t0, 4),
@@ -589,7 +595,7 @@ class Runner:
             self._emit_retrieval("A", index, prompt_id, result, result["k"])
             self._emit_generation("A", index, prompt_id, result["answer"])
 
-            judged = self._judge(scorer, prompt, result)
+            judged = self._judge(scorer, prompt, result, "A")
             row = self._row_from("A", index, prompt, result, judged)
             if row["total_time_s"] is None:
                 row["total_time_s"] = (row["retrieval_time_s"] or 0.0) + (
@@ -675,7 +681,7 @@ class Runner:
             self._emit_decision(index, prompt, result, phase="system_b_infer")
             self._emit_generation("B", index, prompt_id, result["answer"])
 
-            judged = self._judge(scorer, prompt, result)
+            judged = self._judge(scorer, prompt, result, "B")
             row = self._row_from("B", index, prompt, result, judged)
             row["phase"] = "system_b_infer"
             row["reward"] = result.get("reward")

@@ -109,6 +109,35 @@ class TestSystems:
         assert {r["system"] for r in runner.prompt_rows} == {"B"}
         assert runner.training_rows
 
+    def test_judge_events_are_labelled_with_the_system_that_produced_them(self):
+        """The defect: every System B judge event claimed to be System A.
+
+        `_judge` read `result.get("system", "A")`, but nothing in the RAG layers
+        sets that key, so the fallback won every time. Stored rows were built by
+        `_row_from`, which *is* told the system, so the final statistics stayed
+        correct - which is why nothing noticed. The live console, however, keys
+        judge metrics by this field, so System B's scores appeared in System A's
+        row while the run was in flight.
+        """
+        events, runner = run_sidecar(systems=["A", "B"], no_judge=False, limit=3)
+
+        judged = data_of(events, "ragas")
+        assert judged, "no judge events were emitted"
+
+        assert {j["system"] for j in judged} == {"A", "B"}
+
+        # Each judged prompt must agree with the row it belongs to, so a score
+        # cannot drift onto the other system's series.
+        by_system = {}
+        for row in runner.prompt_rows:
+            if row.get("faithfulness") is not None:
+                by_system.setdefault(row["system"], set()).add(row["prompt_id"])
+        for event in judged:
+            assert event["prompt_id"] in by_system[event["system"]], (
+                f"judge event for prompt {event['prompt_id']!r} was labelled "
+                f"{event['system']!r}, which does not own that prompt"
+            )
+
     def test_system_b_produces_both_training_and_inference_rows(self):
         _, runner = run_sidecar(systems=["B"], limit=2)
         assert len(runner.training_rows) == 2

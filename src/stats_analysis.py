@@ -57,8 +57,19 @@ def _paired_test(df: pd.DataFrame, metric: str, alpha: float = ALPHA) -> dict:
         t_stat, p_two = float("nan"), float("nan")
 
     # -- One-tailed p-value (B > A) --
+    #
+    # The direction comes from `mean_diff`, never from the sign of `t_stat`.
+    # `stats.ttest_rel(a, b)` reports `t` for the contrast *a minus b*, so a
+    # positive `t` means A beat B - i.e. B did worse - and halving the p-value on
+    # `t > 0` returns the probability of B being worse while labelling it "B > A".
+    # The two are opposites, so the bug is invisible on any dataset where the
+    # result happens not to be near significance and catastrophic on one where it
+    # is: it reports a large p-value as evidence of improvement.
+    #
+    # `bench_bridge.stats._paired_tests` keys off `mean_diff` for the same reason,
+    # and that is the implementation that produced the committed report.
     if t_stat == t_stat and n >= 2:
-        p_one = float(p_two / 2) if t_stat > 0 else float(1 - p_two / 2)
+        p_one = float(p_two / 2) if mean_diff > 0 else float(1 - p_two / 2)
     else:
         p_one = float("nan")
 
@@ -72,6 +83,10 @@ def _paired_test(df: pd.DataFrame, metric: str, alpha: float = ALPHA) -> dict:
         w_stat, p_wilcoxon_two = float("nan"), float("nan")
 
     # -- Wilcoxon one-tailed (B > A) --
+    # `alternative="less"` is scipy asking whether the *first* sample tends to be
+    # smaller, so with (a, b) ordered as passed that is the B > A tail. Unlike the
+    # t-test above, the ordering argument here is already the one that encodes the
+    # direction, which is why no sign correction is needed.
     if w_stat == w_stat and p_wilcoxon_two == p_wilcoxon_two:
         try:
             w_stat_one, p_wilcoxon_one = stats.wilcoxon(a, b, alternative="less")
