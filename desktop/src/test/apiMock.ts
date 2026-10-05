@@ -25,13 +25,10 @@ export const apiMock = {
   getStats: vi.fn(),
   deleteRun: vi.fn<() => Promise<void>>(),
   getProjection: vi.fn(),
+  getProjectionData: vi.fn(),
   listProjections: vi.fn<() => Promise<string[]>>(),
   importLegacy: vi.fn(),
   onEvent: vi.fn<() => Promise<() => void>>(),
-  readProjectionMeta: vi.fn(),
-  readProjectionPoints: vi.fn(),
-  setBinaryLoader: vi.fn(),
-  resetBinaryLoader: vi.fn(),
 }
 
 /** A minimal `AppInfo`, matching what `app_info` returns. */
@@ -63,4 +60,5 @@ export function resetApiMock(): void {
   apiMock.runInProgress.mockResolvedValue(false)
   apiMock.onEvent.mockResolvedValue(() => {})
   apiMock.getProjection.mockResolvedValue(null)
+  apiMock.getProjectionData.mockResolvedValue(null)
 }

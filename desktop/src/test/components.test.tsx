@@ -406,18 +406,25 @@ describe('ResultsPage', () => {
     expect(await screen.findByText(/no such directory/i)).toBeTruthy()
   })
 
-  it('lists a stored run so an imported benchmark is selectable', async () => {
+it('lists a stored run so an imported benchmark is selectable', async () => {
     apiMock.listRuns.mockResolvedValue([storedRun('imported-hotpot')])
     apiMock.getRunDetail.mockResolvedValue({
       run: storedRun('imported-hotpot'),
-      prompts: [],
+      promptRows: [],
+      trainingRows: [],
       stats: null,
-      training: [],
-      events: [],
     })
     render(<ResultsPage />)
 
     const select = (await screen.findByLabelText('Run')) as HTMLSelectElement
     expect([...select.options].map((o) => o.value)).toContain('imported-hotpot')
+
+    // Selecting it has to render the summary, not just repopulate the <select>.
+    // This assertion is the point of the test: the fixture above used to be
+    // shaped {prompts, training, events} rather than {promptRows, trainingRows},
+    // so SummaryTiles threw on `detail.promptRows.length` after the assertions
+    // had already passed - a green test over a crashed component. Vitest caught
+    // it only as an unhandled error, and intermittently.
+    expect(await screen.findByText('Rows stored')).toBeTruthy()
   })
 })
