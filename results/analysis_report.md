@@ -516,27 +516,44 @@ apart from a model that simply does not answer the same way twice. The judge is
 deterministic at temperature 0 here, and concurrent scoring matched sequential
 scoring on every metric and every judge token count.
 
-Two separate findings, because they apply to different callers:
+Two separate findings, because they apply to different callers, and they do not
+agree:
 
 - **Batch scoring** (`RagasScorer.score` over many prompts) measured **2.36x**
   faster at 4 workers on an idle GPU: 75.2s sequential against 31.9s concurrent.
-- **Within one prompt** the three metrics are independent and now run
-  concurrently, which is the only parallelism available to `run_experiment*.py`.
-  Those runners judge one prompt at a time by design - the reward is the DQN's
-  next training signal, and each row is written as soon as it is judged so a
-  killed host does not lose the run - so cross-prompt concurrency would undo
-  that. Measured on the runner's own path: 36.4s to 24.6s per prompt, with
-  identical metrics and identical judge token counts.
+- **The experiment runners get no speedup at all.** `run_experiment*.py` judges
+  one prompt at a time by necessity — the reward is the DQN's next training
+  signal, and each row is written as soon as it is judged so a killed host does
+  not lose the run — so the only parallelism available to them is across the
+  three metrics of a single prompt. Measured on the runner's own path, that
+  bought nothing:
 
-Caveat on how these were measured: the figure in
-`concurrency_verification.json` is from an otherwise idle GPU, re-measured for
-this revision. An earlier attempt read 1.54x purely because an unrelated
-process was saturating the device - the identical comparison on the identical
-code gave 2.36x once the GPU was free. Quote 2.36x; the earlier number is
-retained only as a reminder that these are wall-clock measurements and need a
-quiet machine.
+  | `RAGAS_MAX_WORKERS` | 2-prompt hotpot run | judge per row |
+  |---|---|---|
+  | 1 | 578s | 74.5s |
+  | 3 | 570s | 139.2s |
 
-Reproduce with `python verify_concurrency.py --workers 4`.
+  Same work, same wall clock, and per-row judge latency nearly doubled because
+  three requests contend for one slot.
+
+The cause is the server, not the code. Ollama defaults to
+`OLLAMA_NUM_PARALLEL=1` and serves one request per model at a time; there is no
+`OLLAMA_*` variable set at machine, user or process scope on this machine. Three
+concurrent clients therefore serialise. The metric-level concurrency in
+`ragas_eval.py` is correct and verified bit-identical — it is simply gated off
+(`RAGAS_MAX_WORKERS = 1`), and it would pay off on a server that can serve
+requests in parallel. Three workers also contributed to wedging Ollama outright
+during this work: 300s read timeouts, six retries each, requiring a restart.
+
+**So the 2.36x must not be read as "the experiment ran 2.36x faster".** It did
+not. The experiments behind every table in this report were run at
+`RAGAS_MAX_WORKERS = 1`, sequentially, and the honest throughput finding is that
+judging dominates (83% of wall-clock) and was not reduced.
+
+Two caveats on the 2.36x itself. It is from an idle GPU; an earlier attempt read
+1.54x purely because an unrelated process was saturating the device, on identical
+code. And it is cross-prompt, a code path the runners do not take. Reproduce
+with `python verify_concurrency.py --workers 4`.
 
 This affects runtime only. No metric in the tables above was computed with
 concurrent scoring enabled - they come from the stored CSVs described in
