@@ -373,11 +373,13 @@ via `src/full_stats.py`; `bench_bridge/tests/test_report_provenance.py` fails if
 
 ### 9.3 Limitations
 
-1. **No significant results at α=0.05** — all p-values > 0.05 for faithfulness
+1. **No significant faithfulness result at α=0.05** — every faithfulness p-value exceeds 0.05. The study's only two statistically significant results are regressions: RagTruth answer relevancy (p=0.033) and fintech context recall (p=0.022) (§9.1)
 2. **Judge stochasticity** — qwen3:8b failures create noise in metrics
 3. **Single seed per dataset** — no averaging over multiple training runs
-4. **Context recall is unreliable** — high judge failure rate
+4. **Context recall is unreliable** — high judge failure rate, and it scores 1.0 for a reference that is absent from the context (§12)
 5. **Small corpus for Fintech** — only 6,251 docs vs 30K for others
+6. **Hotpot's policy was never trained** — `steps=0`, so its k=1 result reflects the reward function, not a learned policy (§12)
+7. **Generator token accounting is unavailable for the committed runs** — the columns hold judge counts, so §4.1 and §4.3 cannot be published from these CSVs
 
 ---
 
@@ -386,10 +388,11 @@ via `src/full_stats.py`; `bench_bridge/tests/test_report_provenance.py` fails if
 ### For Thesis Writing
 1. Present all 4 datasets to show dataset-dependent behavior
 2. Frame as "DQN learns adaptive k-selection" rather than "DQN improves faithfulness"
-3. Highlight Hotpot as the success case (k=1, token efficiency, faithfulness trend)
+3. Treat Hotpot as the most favourable case (k=1, the largest faithfulness trend, 64.4% fewer total request tokens) — but say plainly that its DQN checkpoint is untrained, so this is a reward-structure result and not evidence of a learned policy. Do not describe it as the "success case" without that caveat
 4. Discuss Math as the failure case (degradation, learning difficulties)
 5. Note RagTruth AR degradation as a limitation
 6. Emphasize judge scoring bottleneck as a practical finding
+7. Report that both significant results are regressions; a study whose only statistically reliable findings are degradations does not support a claim of improvement
 
 ### For Further Experiments
 1. **Increase sample size** to n=100 per dataset for better statistical power
@@ -515,8 +518,8 @@ scoring on every metric and every judge token count.
 
 Two separate findings, because they apply to different callers:
 
-- **Batch scoring** (`RagasScorer.score` over many prompts) was 2.0x faster at 4
-  workers on an idle GPU.
+- **Batch scoring** (`RagasScorer.score` over many prompts) measured **2.36x**
+  faster at 4 workers on an idle GPU: 75.2s sequential against 31.9s concurrent.
 - **Within one prompt** the three metrics are independent and now run
   concurrently, which is the only parallelism available to `run_experiment*.py`.
   Those runners judge one prompt at a time by design - the reward is the DQN's
@@ -525,11 +528,15 @@ Two separate findings, because they apply to different callers:
   that. Measured on the runner's own path: 36.4s to 24.6s per prompt, with
   identical metrics and identical judge token counts.
 
-Caveat on the recorded figure: the `speedup` in `concurrency_verification.json`
-was measured while an unrelated process was saturating the GPU, which is why it
-reads 1.54x rather than the 2.0x seen on an idle device. Treat it as a lower
-bound; re-run `python verify_concurrency.py` on an otherwise idle machine to
-refresh it.
+Caveat on how these were measured: the figure in
+`concurrency_verification.json` is from an otherwise idle GPU, re-measured for
+this revision. An earlier attempt read 1.54x purely because an unrelated
+process was saturating the device - the identical comparison on the identical
+code gave 2.36x once the GPU was free. Quote 2.36x; the earlier number is
+retained only as a reminder that these are wall-clock measurements and need a
+quiet machine.
+
+Reproduce with `python verify_concurrency.py --workers 4`.
 
 This affects runtime only. No metric in the tables above was computed with
 concurrent scoring enabled - they come from the stored CSVs described in

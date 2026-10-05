@@ -16,7 +16,20 @@ MATH_DIR = DATASETS_DIR
 RAGTRUTH_DIR = DATASETS_DIR / "no_structure_yet"
 CHROMA_DIR = DATA_DIR / "chroma_db"
 PROMPTS_DIR = PROJECT_ROOT / "prompts"
-CHECKPOINTS_DIR = PROJECT_ROOT / "checkpoints"
+# A run trains and rewrites these in place, so an experiment that points at the
+# thesis checkpoints destroys the evidence for the published numbers. They are
+# git-tracked and their hashes are recorded in the report, which is what makes
+# the damage recoverable - but recovering by hand is not a good workflow.
+#
+# `BENCH_CHECKPOINTS_DIR` lets a trial run write somewhere disposable:
+#
+#     $env:BENCH_CHECKPOINTS_DIR = "$env:TEMP\ckpt-trial"
+#     python run_experiment_logged.py --dataset hotpot --limit 2 ...
+#
+# Unset (the normal case) the thesis checkpoints are used and updated as before.
+CHECKPOINTS_DIR = Path(
+    os.environ.get("BENCH_CHECKPOINTS_DIR") or (PROJECT_ROOT / "checkpoints")
+).resolve()
 RESULTS_DIR = PROJECT_ROOT / "results"
 RAGAS_RESULTS_PATH = RESULTS_DIR / "ragas_results_math.csv"  # default (math)
 
@@ -109,6 +122,23 @@ PROMPT_BUILD_SEED = 42
 RAGTRUTH_RESPONSE_MODEL = "gpt-4-0613"
 
 RAGAS_TIMEOUT = 300
-RAGAS_MAX_WORKERS = 1
+
+# Workers for judge scoring. The judge is 83% of a run's wall-clock, so this is
+# the single biggest lever on runtime: at 1 a full four-dataset pass is ~10h.
+#
+# Three, not four, because a prompt has exactly three metrics and four workers
+# would leave one idle while holding more Ollama requests open than there is
+# work. Scoping is per prompt - the runners judge one prompt at a time by
+# necessity, since the reward is the DQN's next training signal - so this
+# parallelises the three metrics of a prompt, not the prompts.
+#
+# Correctness is not taken on trust: concurrent scoring is verified against the
+# real judge by `verify_concurrency.py` (recorded in
+# `results/concurrency_verification.json`, asserted by
+# `bench_bridge/tests/test_concurrency_verification.py`) and against a stub by
+# `bench_bridge/tests/test_concurrent_scoring.py`. Both require every metric and
+# every judge token count to match sequential exactly. Measured 2.36x on an idle
+# GPU. Lower this to 1 to reproduce the pre-concurrency timings.
+RAGAS_MAX_WORKERS = 3
 
 MAX_CORPUS_DOCS = 30000

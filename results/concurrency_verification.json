@@ -4,7 +4,7 @@
   "runs": {
     "seq_run1": {
       "workers": 1,
-      "seconds": 155.4,
+      "seconds": 75.2,
       "rows": [
         {
           "faithfulness": 1.0,
@@ -31,7 +31,7 @@
     },
     "seq_run2": {
       "workers": 1,
-      "seconds": 132.2,
+      "seconds": 68.2,
       "rows": [
         {
           "faithfulness": 1.0,
@@ -58,7 +58,7 @@
     },
     "concurrent": {
       "workers": 4,
-      "seconds": 101.1,
+      "seconds": 31.9,
       "rows": [
         {
           "faithfulness": 1.0,
@@ -86,5 +86,5 @@
   },
   "judge_repeatability_diffs": [],
   "concurrent_vs_sequential_diffs": [],
-  "speedup": 1.54
+  "speedup": 2.36
 }
